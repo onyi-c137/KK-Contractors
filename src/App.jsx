@@ -19,9 +19,15 @@ import {
   Plus,
   CalendarDays,
   Search,
+  LogOut,
+  User,
+  ChevronUp,
+  ChevronDown,
+  Trash2,
+  Eye,
 } from "lucide-react";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Login from "./Login";
 import { getCurrentProfile } from "./lib/profile";
 
@@ -34,15 +40,6 @@ import { supabase } from "./lib/supabase";
 /* =========================================
    CONSTANTS
 ========================================= */
-
-const staffNames = [
-  "Oscar",
-  "Collins",
-  "Brian",
-  "William",
-  "Elizabeth",
-  "Purity",
-];
 
 const serviceOptions = [
   "Land preparation",
@@ -59,6 +56,273 @@ const requestStatuses = [
   "Completed",
   "Cancelled",
 ];
+
+
+
+/* =========================================
+   ACCOUNT MENU
+========================================= */
+
+function getInitials(fullName) {
+  if (!fullName) return "?";
+
+  return fullName
+    .split(" ")
+    .filter(Boolean)
+    .map((name) => name[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+}
+
+function AccountMenu({
+  profile,
+  position = "top",
+  onLogout,
+  onNavigate,
+}) {
+  const [open, setOpen] = useState(false);
+  const menuRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+
+    function handlePointerDown(event) {
+      if (
+        menuRef.current &&
+        !menuRef.current.contains(event.target)
+      ) {
+        setOpen(false);
+      }
+    }
+
+    function handleEscape(event) {
+      if (event.key === "Escape") {
+        setOpen(false);
+      }
+    }
+
+    // Use pointerdown in capture phase only for outside closes.
+    // Menu actions use onClick and stopPropagation so they still fire.
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleEscape);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [open]);
+
+  const roleLabel =
+    profile?.role === "owner" ? "Administrator" : "Staff";
+
+  const initials = getInitials(profile?.full_name);
+
+  const isBottom = position === "bottom";
+
+  const handleItem = (event, page) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setOpen(false);
+    if (onNavigate) {
+      onNavigate(page);
+    }
+  };
+
+  const handleSignOut = async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setOpen(false);
+    if (onLogout) {
+      await onLogout();
+    }
+  };
+
+  return (
+    <div className="relative" ref={menuRef}>
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpen((current) => !current);
+        }}
+        className={
+          isBottom
+            ? "flex w-full items-center gap-3 rounded-xl bg-white/5 p-3 text-left transition hover:bg-white/10"
+            : "flex items-center gap-3 rounded-xl px-2 py-1.5 text-left transition hover:bg-slate-100"
+        }
+        title="Account menu"
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        <div
+          className={
+            isBottom
+              ? "flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-sm font-bold text-slate-950"
+              : "flex h-10 w-10 items-center justify-center rounded-full bg-slate-950 text-sm font-bold text-white"
+          }
+        >
+          {initials}
+        </div>
+
+        <div
+          className={
+            isBottom
+              ? "min-w-0 flex-1"
+              : "hidden text-right sm:block"
+          }
+        >
+          <p
+            className={
+              isBottom
+                ? "truncate text-sm font-semibold text-white"
+                : "text-sm font-semibold text-slate-900"
+            }
+          >
+            {profile?.full_name || "User"}
+          </p>
+
+          <p
+            className={
+              isBottom
+                ? "truncate text-xs capitalize text-slate-400"
+                : "text-xs capitalize text-slate-500"
+            }
+          >
+            {roleLabel}
+          </p>
+        </div>
+
+        {isBottom ? (
+          open ? (
+            <ChevronDown size={16} className="text-slate-400" />
+          ) : (
+            <ChevronUp size={16} className="text-slate-400" />
+          )
+        ) : null}
+      </button>
+
+      {open && (
+        <div
+          role="menu"
+          className={
+            isBottom
+              ? "absolute bottom-full left-0 right-0 z-[60] mb-2 overflow-hidden rounded-xl border border-white/10 bg-slate-900 shadow-2xl"
+              : "absolute right-0 top-full z-[60] mt-2 w-64 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl"
+          }
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <div
+            className={
+              isBottom
+                ? "border-b border-white/10 px-4 py-3"
+                : "border-b border-slate-100 px-4 py-3"
+            }
+          >
+            <div className="flex items-center gap-3">
+              <div
+                className={
+                  isBottom
+                    ? "flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-sm font-bold text-slate-950"
+                    : "flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-950 text-sm font-bold text-white"
+                }
+              >
+                {initials}
+              </div>
+
+              <div className="min-w-0">
+                <p
+                  className={
+                    isBottom
+                      ? "truncate text-sm font-semibold text-white"
+                      : "truncate text-sm font-semibold text-slate-900"
+                  }
+                >
+                  {profile?.full_name || "User"}
+                </p>
+                <p
+                  className={
+                    isBottom
+                      ? "truncate text-xs capitalize text-slate-400"
+                      : "truncate text-xs capitalize text-slate-500"
+                  }
+                >
+                  {roleLabel}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="py-1">
+            <button
+              type="button"
+              role="menuitem"
+              onClick={(event) => handleItem(event, "Settings")}
+              className={
+                isBottom
+                  ? "flex w-full items-center gap-3 px-4 py-2.5 text-sm text-slate-200 transition hover:bg-white/10"
+                  : "flex w-full items-center gap-3 px-4 py-2.5 text-sm text-slate-700 transition hover:bg-slate-50"
+              }
+            >
+              <User size={17} />
+              My profile
+            </button>
+
+            <button
+              type="button"
+              role="menuitem"
+              onClick={(event) => handleItem(event, "Settings")}
+              className={
+                isBottom
+                  ? "flex w-full items-center gap-3 px-4 py-2.5 text-sm text-slate-200 transition hover:bg-white/10"
+                  : "flex w-full items-center gap-3 px-4 py-2.5 text-sm text-slate-700 transition hover:bg-slate-50"
+              }
+            >
+              <Bell size={17} />
+              Notifications
+            </button>
+
+            <button
+              type="button"
+              role="menuitem"
+              onClick={(event) => handleItem(event, "Settings")}
+              className={
+                isBottom
+                  ? "flex w-full items-center gap-3 px-4 py-2.5 text-sm text-slate-200 transition hover:bg-white/10"
+                  : "flex w-full items-center gap-3 px-4 py-2.5 text-sm text-slate-700 transition hover:bg-slate-50"
+              }
+            >
+              <Settings size={17} />
+              Settings
+            </button>
+          </div>
+
+          <div
+            className={
+              isBottom
+                ? "border-t border-white/10 py-1"
+                : "border-t border-slate-100 py-1"
+            }
+          >
+            <button
+              type="button"
+              role="menuitem"
+              onClick={handleSignOut}
+              className={
+                isBottom
+                  ? "flex w-full items-center gap-3 px-4 py-2.5 text-sm text-red-400 transition hover:bg-white/10"
+                  : "flex w-full items-center gap-3 px-4 py-2.5 text-sm text-red-600 transition hover:bg-red-50"
+              }
+            >
+              <LogOut size={17} />
+              Sign out
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 
 /* =========================================
@@ -138,10 +402,37 @@ function App() {
   };
 
   const handleLogout = async () => {
-    const { error } = await supabase.auth.signOut();
+    // Clear local auth state first so the UI switches to Login immediately.
+    setSession(null);
+    setProfile(null);
+    setSidebarOpen(false);
+    setCurrentPage("Dashboard");
 
-    if (error) {
-      console.error("Logout error:", error);
+    try {
+      const { error } = await supabase.auth.signOut({
+        scope: "local",
+      });
+
+      if (error) {
+        console.error("Logout error:", error);
+      }
+
+      // Also clear any persisted session storage keys as a fallback.
+      try {
+        const keys = Object.keys(window.localStorage || {});
+        keys.forEach((key) => {
+          if (
+            key.startsWith("sb-") ||
+            key.includes("supabase")
+          ) {
+            window.localStorage.removeItem(key);
+          }
+        });
+      } catch (storageError) {
+        console.error("Storage clear error:", storageError);
+      }
+    } catch (error) {
+      console.error("Logout failed:", error);
     }
   };
 
@@ -309,34 +600,12 @@ function App() {
 
 
         <div className="border-t border-white/10 p-4">
-          <button
-            onClick={handleLogout}
-            className="flex w-full items-center gap-3 rounded-xl bg-white/5 p-3 text-left transition hover:bg-white/10"
-            title="Sign out"
-          >
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-sm font-bold text-slate-950">
-              {profile.full_name
-                ?.split(" ")
-                .map((name) => name[0])
-                .join("")
-                .slice(0, 2)
-                .toUpperCase()}
-            </div>
-
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-semibold">
-                {profile.full_name}
-              </p>
-
-              <p className="truncate text-xs capitalize text-slate-400">
-                {profile.role === "owner" ? "Administrator" : "Staff"}
-              </p>
-            </div>
-
-            <span className="text-xs text-slate-400">
-              Logout
-            </span>
-          </button>
+          <AccountMenu
+            profile={profile}
+            position="bottom"
+            onLogout={handleLogout}
+            onNavigate={navigate}
+          />
         </div>
 
       </aside>
@@ -379,32 +648,12 @@ function App() {
 
             <div className="hidden h-8 w-px bg-slate-200 sm:block" />
 
-            <button
-              onClick={handleLogout}
-              className="flex items-center gap-3 rounded-xl px-2 py-1.5 text-left transition hover:bg-slate-100"
-              title="Sign out"
-            >
-              <div className="hidden text-right sm:block">
-                <p className="text-sm font-semibold">
-                  {profile.full_name}
-                </p>
-
-                <p className="text-xs capitalize text-slate-500">
-                  {profile.role === "owner"
-                    ? "Administrator"
-                    : "Staff"}
-                </p>
-              </div>
-
-              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-950 text-sm font-bold text-white">
-                {profile.full_name
-                  ?.split(" ")
-                  .map((name) => name[0])
-                  .join("")
-                  .slice(0, 2)
-                  .toUpperCase()}
-              </div>
-            </button>
+            <AccountMenu
+              profile={profile}
+              position="top"
+              onLogout={handleLogout}
+              onNavigate={navigate}
+            />
 
           </div>
 
@@ -414,20 +663,25 @@ function App() {
         <main className="p-4 sm:p-6 lg:p-8">
 
           {currentPage === "Dashboard" && (
-            <DashboardPage />
+            <DashboardPage currentUser={profile} />
           )}
 
           {currentPage === "Customers" && (
-            <CustomersPage />
+            <CustomersPage currentUser={profile} />
           )}
 
           {currentPage === "Requests" && (
-            <RequestsPage />
+            <RequestsPage currentUser={profile} />
+          )}
+
+          {currentPage === "Staff" && (
+            <StaffPage />
           )}
 
           {currentPage !== "Dashboard" &&
             currentPage !== "Customers" &&
-            currentPage !== "Requests" && (
+            currentPage !== "Requests" &&
+            currentPage !== "Staff" && (
               <ComingSoonPage page={currentPage} />
             )}
 
@@ -444,7 +698,7 @@ function App() {
    DASHBOARD
 ========================================= */
 
-function DashboardPage() {
+function DashboardPage({ currentUser }) {
 
   const [requests, setRequests] = useState([]);
   const [customers, setCustomers] = useState([]);
@@ -477,6 +731,7 @@ function DashboardPage() {
           status,
           notes,
           created_at,
+          created_by,
           customer:customers (
             id,
             name
@@ -484,6 +739,10 @@ function DashboardPage() {
           tractor:tractors (
             id,
             name
+          ),
+          creator:profiles!created_by (
+            id,
+            full_name
           )
         `)
         .order("created_at", {
@@ -691,8 +950,14 @@ function DashboardPage() {
                         </p>
 
                         <p className="text-sm text-slate-500">
-                          {request.service} Â·{" "}
+                          {request.service} ·{" "}
                           {request.location}
+                        </p>
+
+                        <p className="mt-1 text-xs text-slate-400">
+                          Created by{" "}
+                          {request.creator?.full_name ||
+                            "Unknown staff"}
                         </p>
 
                       </div>
@@ -877,12 +1142,15 @@ function DashboardPage() {
    CUSTOMERS
 ========================================= */
 
-function CustomersPage() {
+function CustomersPage({ currentUser }) {
 
   const [customers, setCustomers] = useState([]);
   const [search, setSearch] = useState("");
   const [showAddCustomer, setShowAddCustomer] =
     useState(false);
+  const [selectedCustomer, setSelectedCustomer] =
+    useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -901,7 +1169,12 @@ function CustomersPage() {
         phone,
         location,
         notes,
-        created_at
+        created_at,
+        created_by,
+        creator:profiles!created_by (
+          id,
+          full_name
+        )
       `)
       .order("created_at", {
         ascending: false,
@@ -1010,6 +1283,13 @@ function CustomersPage() {
     setError("");
 
 
+    if (!currentUser?.id) {
+      setError(
+        "You must be signed in to create a customer."
+      );
+      return;
+    }
+
     const { data, error } = await supabase
       .from("customers")
       .insert({
@@ -1018,8 +1298,21 @@ function CustomersPage() {
         location: customer.location.trim(),
         notes:
           customer.notes?.trim() || null,
+        created_by: currentUser.id,
       })
-      .select()
+      .select(`
+        id,
+        name,
+        phone,
+        location,
+        notes,
+        created_at,
+        created_by,
+        creator:profiles!created_by (
+          id,
+          full_name
+        )
+      `)
       .single();
 
 
@@ -1053,6 +1346,112 @@ function CustomersPage() {
     setShowAddCustomer(false);
 
     await loadCustomers();
+  };
+
+
+  const deleteCustomer = async (customer) => {
+    if (!customer?.id) return;
+
+    setDeleting(true);
+    setError("");
+
+    try {
+      // 1. Load related requests and enforce the same rule as SQL
+      const {
+        data: relatedRequests,
+        error: requestsError,
+      } = await supabase
+        .from("requests")
+        .select("id, status")
+        .eq("customer_id", customer.id);
+
+      if (requestsError) {
+        console.error(
+          "Error loading customer requests:",
+          requestsError
+        );
+        setError(requestsError.message);
+        return;
+      }
+
+      const requests = relatedRequests || [];
+      const activeRequests = requests.filter(
+        (request) => request.status !== "Cancelled"
+      );
+      const cancelledRequests = requests.filter(
+        (request) => request.status === "Cancelled"
+      );
+
+      if (activeRequests.length > 0) {
+        setError(
+          `Cannot delete "${customer.name}": ${activeRequests.length} request(s) are not Cancelled. Cancel them first, then try again.`
+        );
+        return;
+      }
+
+      const confirmed = window.confirm(
+        cancelledRequests.length > 0
+          ? `Delete customer "${customer.name}"?\n\nThis will also permanently remove ${cancelledRequests.length} cancelled request(s).`
+          : `Delete customer "${customer.name}"?\n\nThis cannot be undone.`
+      );
+
+      if (!confirmed) return;
+
+      // 2. Remove cancelled requests first (app-side, matches trigger)
+      if (cancelledRequests.length > 0) {
+        const cancelledIds = cancelledRequests.map(
+          (request) => request.id
+        );
+
+        const { error: cancelDeleteError } = await supabase
+          .from("requests")
+          .delete()
+          .in("id", cancelledIds);
+
+        if (cancelDeleteError) {
+          console.error(
+            "Error deleting cancelled requests:",
+            cancelDeleteError
+          );
+          setError(cancelDeleteError.message);
+          return;
+        }
+      }
+
+      // 3. Delete the customer; .select() detects RLS silent failures
+      const { data: deletedRows, error: deleteError } =
+        await supabase
+          .from("customers")
+          .delete()
+          .eq("id", customer.id)
+          .select("id");
+
+      if (deleteError) {
+        console.error("Error deleting customer:", deleteError);
+        setError(deleteError.message);
+        return;
+      }
+
+      if (!deletedRows || deletedRows.length === 0) {
+        setError(
+          "Customer was not deleted. Check Supabase RLS policies allow DELETE on public.customers for your role."
+        );
+        return;
+      }
+
+      setSelectedCustomer(null);
+      setCustomers((current) =>
+        current.filter((item) => item.id !== customer.id)
+      );
+      await loadCustomers();
+    } catch (err) {
+      console.error("Unexpected delete error:", err);
+      setError(
+        err?.message || "Unable to delete customer."
+      );
+    } finally {
+      setDeleting(false);
+    }
   };
 
 
@@ -1158,6 +1557,10 @@ function CustomersPage() {
                 </th>
 
                 <th className="px-5 py-4">
+                  Created by
+                </th>
+
+                <th className="px-5 py-4">
                   Action
                 </th>
 
@@ -1173,7 +1576,7 @@ function CustomersPage() {
                 <tr>
 
                   <td
-                    colSpan="5"
+                    colSpan="6"
                     className="px-5 py-12 text-center text-slate-500"
                   >
                     Loading customers...
@@ -1252,16 +1655,21 @@ function CustomersPage() {
                       </td>
 
 
+                      <td className="px-5 py-4 text-sm text-slate-600">
+                        {customer.creator?.full_name ||
+                          "—"}
+                      </td>
+
                       <td className="px-5 py-4">
 
                         <button
+                          type="button"
                           onClick={() =>
-                            alert(
-                              `Customer ID: ${customer.id}`
-                            )
+                            setSelectedCustomer(customer)
                           }
-                          className="text-sm font-semibold text-slate-700 hover:text-slate-950"
+                          className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-700 hover:text-slate-950"
                         >
+                          <Eye size={15} />
                           View
                         </button>
 
@@ -1277,7 +1685,7 @@ function CustomersPage() {
                 <tr>
 
                   <td
-                    colSpan="5"
+                    colSpan="6"
                     className="px-5 py-12 text-center"
                   >
 
@@ -1315,6 +1723,19 @@ function CustomersPage() {
             setShowAddCustomer(false)
           }
           onSave={addCustomer}
+        />
+      )}
+
+      {selectedCustomer && (
+        <ViewCustomerModal
+          customer={selectedCustomer}
+          deleting={deleting}
+          error={error}
+          onClose={() => {
+            setSelectedCustomer(null);
+            setError("");
+          }}
+          onDelete={deleteCustomer}
         />
       )}
 
@@ -1506,11 +1927,131 @@ function AddCustomerModal({
 }
 
 
+
+/* =========================================
+   VIEW CUSTOMER
+========================================= */
+
+function ViewCustomerModal({
+  customer,
+  onClose,
+  onDelete,
+  deleting = false,
+  error = "",
+}) {
+  if (!customer) return null;
+
+  const createdAt = customer.created_at
+    ? new Date(customer.created_at).toLocaleString()
+    : "—";
+
+  return (
+    <Modal title="Customer details" onClose={onClose}>
+      <div className="space-y-5">
+        {error ? (
+          <div className="rounded-xl border border-red-100 bg-red-50 p-3 text-sm text-red-700">
+            {error}
+          </div>
+        ) : null}
+
+        <div className="flex items-center gap-4">
+          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-slate-100 text-lg font-bold text-slate-700">
+            {customer.name?.charAt(0)?.toUpperCase() || "?"}
+          </div>
+
+          <div className="min-w-0">
+            <p className="truncate text-lg font-semibold text-slate-900">
+              {customer.name}
+            </p>
+            <p className="text-sm text-slate-500">
+              {customer.requests || 0} request
+              {(customer.requests || 0) === 1 ? "" : "s"}
+            </p>
+          </div>
+        </div>
+
+        <div className="space-y-3 rounded-xl border border-slate-100 bg-slate-50 p-4">
+          <DetailRow
+            icon={<Phone size={16} />}
+            label="Phone"
+            value={customer.phone || "—"}
+          />
+          <DetailRow
+            icon={<MapPin size={16} />}
+            label="Location"
+            value={customer.location || "—"}
+          />
+          <DetailRow
+            icon={<User size={16} />}
+            label="Created by"
+            value={customer.creator?.full_name || "—"}
+          />
+          <DetailRow
+            icon={<CalendarDays size={16} />}
+            label="Created at"
+            value={createdAt}
+          />
+        </div>
+
+        {customer.notes ? (
+          <div>
+            <p className="mb-1 text-sm font-medium text-slate-700">
+              Notes
+            </p>
+            <p className="rounded-xl border border-slate-100 bg-white p-3 text-sm text-slate-600">
+              {customer.notes}
+            </p>
+          </div>
+        ) : null}
+
+        <div className="flex flex-col-reverse gap-3 border-t border-slate-100 pt-5 sm:flex-row sm:justify-between">
+          <button
+            type="button"
+            disabled={deleting}
+            onClick={() => onDelete(customer)}
+            className="flex items-center justify-center gap-2 rounded-xl border border-red-200 bg-red-50 px-5 py-3 text-sm font-semibold text-red-700 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Trash2 size={17} />
+            {deleting ? "Deleting..." : "Delete customer"}
+          </button>
+
+          <button
+            type="button"
+            disabled={deleting}
+            onClick={onClose}
+            className="rounded-xl border border-slate-200 px-5 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+
+function DetailRow({ icon, label, value }) {
+  return (
+    <div className="flex items-start gap-3">
+      <div className="mt-0.5 text-slate-400">{icon}</div>
+      <div className="min-w-0">
+        <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+          {label}
+        </p>
+        <p className="mt-0.5 break-words text-sm font-medium text-slate-800">
+          {value}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+
 /* =========================================
    REQUESTS
 ========================================= */
 
-function RequestsPage() {
+function RequestsPage({ currentUser }) {
 
   const [requests, setRequests] = useState([]);
   const [customers, setCustomers] = useState([]);
@@ -1550,6 +2091,7 @@ function RequestsPage() {
           notes,
           created_at,
           updated_at,
+          created_by,
           customer:customers (
             id,
             name
@@ -1558,6 +2100,10 @@ function RequestsPage() {
             id,
             name,
             status
+          ),
+          creator:profiles!created_by (
+            id,
+            full_name
           )
         `)
         .order("created_at", {
@@ -1699,6 +2245,13 @@ function RequestsPage() {
     setError("");
 
 
+    if (!currentUser?.id) {
+      setError(
+        "You must be signed in to create a request."
+      );
+      return;
+    }
+
     const { error } = await supabase
       .from("requests")
       .insert({
@@ -1726,9 +2279,7 @@ function RequestsPage() {
         notes:
           request.notes?.trim() || null,
 
-        // created_by deliberately left null
-        // until staff authentication/profiles
-        // are connected.
+        created_by: currentUser.id,
       });
 
 
@@ -1952,6 +2503,10 @@ function RequestsPage() {
                 </th>
 
                 <th className="px-5 py-4">
+                  Created by
+                </th>
+
+                <th className="px-5 py-4">
                   Status
                 </th>
 
@@ -1967,7 +2522,7 @@ function RequestsPage() {
                 <tr>
 
                   <td
-                    colSpan="7"
+                    colSpan="8"
                     className="px-5 py-12 text-center text-slate-500"
                   >
                     Loading requests...
@@ -1995,7 +2550,9 @@ function RequestsPage() {
                         </p>
 
                         <p className="mt-1 text-xs text-slate-400">
-                          Database record
+                          {request.creator?.full_name
+                            ? `Logged by ${request.creator.full_name}`
+                            : "Database record"}
                         </p>
 
                       </td>
@@ -2034,6 +2591,12 @@ function RequestsPage() {
 
                       <td className="px-5 py-4 text-sm text-slate-600">
                         {request.requested_date}
+                      </td>
+
+
+                      <td className="px-5 py-4 text-sm text-slate-600">
+                        {request.creator?.full_name ||
+                          "—"}
                       </td>
 
 
@@ -2077,7 +2640,7 @@ function RequestsPage() {
                 <tr>
 
                   <td
-                    colSpan="7"
+                    colSpan="8"
                     className="px-5 py-12 text-center"
                   >
 
@@ -2827,6 +3390,177 @@ function RequestStatus({
     >
       {status}
     </span>
+  );
+}
+
+
+
+/* =========================================
+   STAFF
+========================================= */
+
+function StaffPage() {
+  const [profiles, setProfiles] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const loadProfiles = async () => {
+    setLoading(true);
+    setError("");
+
+    const { data, error: queryError } = await supabase
+      .from("profiles")
+      .select("id, full_name, role, active, created_at")
+      .order("full_name", { ascending: true });
+
+    if (queryError) {
+      console.error("Error loading staff profiles:", queryError);
+      setError(queryError.message);
+      setLoading(false);
+      return;
+    }
+
+    setProfiles(data || []);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    loadProfiles();
+
+    const channel = supabase
+      .channel("staff-profiles")
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "profiles",
+        },
+        () => {
+          loadProfiles();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  const activeProfiles = profiles.filter((p) => p.active);
+  const inactiveProfiles = profiles.filter((p) => !p.active);
+  const adminCount = profiles.filter((p) => p.role === "owner").length;
+
+  return (
+    <div>
+      <div className="mb-8">
+        <p className="text-sm font-medium text-slate-500">
+          Team management
+        </p>
+
+        <h1 className="mt-1 text-2xl font-bold tracking-tight sm:text-3xl">
+          Staff
+        </h1>
+
+        <p className="mt-2 text-slate-500">
+          Profiles stored in Supabase. Staff accounts are managed through
+          authentication, not hard-coded names.
+        </p>
+      </div>
+
+      {error && <DatabaseError message={error} />}
+
+      <div className="mb-6 grid gap-4 sm:grid-cols-3">
+        <MiniStat title="Total profiles" value={loading ? "…" : profiles.length} />
+        <MiniStat title="Active staff" value={loading ? "…" : activeProfiles.length} />
+        <MiniStat title="Administrators" value={loading ? "…" : adminCount} />
+      </div>
+
+      <section className="mb-6 rounded-2xl border border-slate-200 bg-white">
+        <div className="border-b border-slate-100 p-5">
+          <h2 className="font-semibold">Active staff</h2>
+          <p className="mt-1 text-sm text-slate-500">
+            {loading
+              ? "Loading profiles..."
+              : `${activeProfiles.length} active profile${activeProfiles.length === 1 ? "" : "s"}`}
+          </p>
+        </div>
+
+        <div className="grid gap-3 p-5 sm:grid-cols-2 lg:grid-cols-3">
+          {loading ? (
+            <div className="col-span-full py-8 text-center text-sm text-slate-500">
+              Loading staff...
+            </div>
+          ) : activeProfiles.length > 0 ? (
+            activeProfiles.map((person) => (
+              <div
+                key={person.id}
+                className="flex items-center gap-3 rounded-xl border border-slate-100 p-4"
+              >
+                <div className="flex h-11 w-11 items-center justify-center rounded-full bg-slate-100 text-sm font-bold">
+                  {getInitials(person.full_name)}
+                </div>
+
+                <div className="min-w-0 flex-1">
+                  <p className="truncate font-medium">
+                    {person.full_name}
+                  </p>
+                  <p className="text-xs capitalize text-slate-500">
+                    {person.role === "owner" ? "Administrator" : "Staff"}
+                  </p>
+                </div>
+
+                <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-emerald-500" />
+              </div>
+            ))
+          ) : (
+            <div className="col-span-full rounded-xl bg-slate-50 p-6 text-center">
+              <Users size={28} className="mx-auto text-slate-300" />
+              <p className="mt-3 font-medium">No active staff</p>
+              <p className="mt-1 text-sm text-slate-500">
+                Active profiles from public.profiles will appear here.
+              </p>
+            </div>
+          )}
+        </div>
+      </section>
+
+      {inactiveProfiles.length > 0 && (
+        <section className="rounded-2xl border border-slate-200 bg-white">
+          <div className="border-b border-slate-100 p-5">
+            <h2 className="font-semibold">Inactive profiles</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              {inactiveProfiles.length} inactive profile
+              {inactiveProfiles.length === 1 ? "" : "s"}
+            </p>
+          </div>
+
+          <div className="grid gap-3 p-5 sm:grid-cols-2 lg:grid-cols-3">
+            {inactiveProfiles.map((person) => (
+              <div
+                key={person.id}
+                className="flex items-center gap-3 rounded-xl border border-slate-100 bg-slate-50 p-4 opacity-70"
+              >
+                <div className="flex h-11 w-11 items-center justify-center rounded-full bg-slate-200 text-sm font-bold text-slate-500">
+                  {getInitials(person.full_name)}
+                </div>
+
+                <div className="min-w-0 flex-1">
+                  <p className="truncate font-medium text-slate-600">
+                    {person.full_name}
+                  </p>
+                  <p className="text-xs capitalize text-slate-400">
+                    {person.role === "owner" ? "Administrator" : "Staff"}
+                  </p>
+                </div>
+
+                <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-slate-300" />
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+    </div>
   );
 }
 

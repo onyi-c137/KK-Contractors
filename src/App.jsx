@@ -65,6 +65,32 @@ const tractorStatuses = [
   "Inactive",
 ];
 
+const paymentMethods = [
+  "Cash",
+  "M-Pesa",
+  "Bank Transfer",
+  "Other",
+];
+
+const expenseCategories = [
+  "Fuel",
+  "Repairs",
+  "Maintenance",
+  "Transport",
+  "Labour",
+  "Parts",
+  "Other",
+];
+
+function formatMoney(amount) {
+  const value = Number(amount);
+  if (Number.isNaN(value)) return "KSh 0.00";
+  return `KSh ${value.toLocaleString("en-KE", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
 
 
 /* =========================================
@@ -690,11 +716,21 @@ function App() {
             <TractorsPage currentUser={profile} />
           )}
 
+          {currentPage === "Payments" && (
+            <PaymentsPage currentUser={profile} />
+          )}
+
+          {currentPage === "Expenses" && (
+            <ExpensesPage currentUser={profile} />
+          )}
+
           {currentPage !== "Dashboard" &&
             currentPage !== "Customers" &&
             currentPage !== "Requests" &&
             currentPage !== "Staff" &&
-            currentPage !== "Tractors" && (
+            currentPage !== "Tractors" &&
+            currentPage !== "Payments" &&
+            currentPage !== "Expenses" && (
               <ComingSoonPage page={currentPage} />
             )}
 
@@ -3632,6 +3668,907 @@ function RequestStatus({
 }
 
 
+
+
+
+/* =========================================
+   PAYMENTS
+========================================= */
+
+function PaymentsPage({ currentUser }) {
+  const [payments, setPayments] = useState([]);
+  const [customers, setCustomers] = useState([]);
+  const [requests, setRequests] = useState([]);
+  const [search, setSearch] = useState("");
+  const [showAdd, setShowAdd] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const loadPayments = async () => {
+    setLoading(true);
+    setError("");
+
+    const [paymentsResult, customersResult, requestsResult] =
+      await Promise.all([
+        supabase
+          .from("payments")
+          .select(`
+            id,
+            customer_id,
+            request_id,
+            amount,
+            payment_date,
+            payment_method,
+            reference,
+            notes,
+            created_at,
+            created_by,
+            customer:customers (
+              id,
+              name,
+              phone
+            ),
+            request:requests (
+              id,
+              service,
+              location,
+              status
+            ),
+            creator:profiles!created_by (
+              id,
+              full_name
+            )
+          `)
+          .order("payment_date", { ascending: false })
+          .order("created_at", { ascending: false }),
+        supabase
+          .from("customers")
+          .select("id, name")
+          .order("name"),
+        supabase
+          .from("requests")
+          .select(`
+            id,
+            customer_id,
+            service,
+            location,
+            status,
+            requested_date
+          `)
+          .order("created_at", { ascending: false }),
+      ]);
+
+    if (paymentsResult.error) {
+      console.error("Error loading payments:", paymentsResult.error);
+      setError(paymentsResult.error.message);
+      setLoading(false);
+      return;
+    }
+
+    if (customersResult.error) {
+      setError(customersResult.error.message);
+      setLoading(false);
+      return;
+    }
+
+    if (requestsResult.error) {
+      setError(requestsResult.error.message);
+      setLoading(false);
+      return;
+    }
+
+    setPayments(paymentsResult.data || []);
+    setCustomers(customersResult.data || []);
+    setRequests(requestsResult.data || []);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    loadPayments();
+  }, []);
+
+  const filtered = payments.filter((payment) => {
+    const q = search.toLowerCase();
+    const customerName = payment.customer?.name || "";
+    const method = payment.payment_method || "";
+    const reference = payment.reference || "";
+    const creator = payment.creator?.full_name || "";
+    return (
+      customerName.toLowerCase().includes(q) ||
+      method.toLowerCase().includes(q) ||
+      reference.toLowerCase().includes(q) ||
+      creator.toLowerCase().includes(q) ||
+      String(payment.amount).includes(q)
+    );
+  });
+
+  const totalAmount = filtered.reduce(
+    (sum, payment) => sum + Number(payment.amount || 0),
+    0
+  );
+
+  const addPayment = async (form) => {
+    setError("");
+
+    if (!currentUser?.id) {
+      setError("You must be signed in to record a payment.");
+      return;
+    }
+
+    const { error: insertError } = await supabase.from("payments").insert({
+      customer_id: form.customerId,
+      request_id: form.requestId || null,
+      amount: Number(form.amount),
+      payment_date: form.paymentDate,
+      payment_method: form.paymentMethod,
+      reference: form.reference?.trim() || null,
+      notes: form.notes?.trim() || null,
+      created_by: currentUser.id,
+    });
+
+    if (insertError) {
+      console.error("Error adding payment:", insertError);
+      setError(insertError.message);
+      return;
+    }
+
+    setShowAdd(false);
+    await loadPayments();
+  };
+
+  return (
+    <div>
+      <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="text-sm font-medium text-slate-500">
+            Money in
+          </p>
+          <h1 className="mt-1 text-2xl font-bold tracking-tight sm:text-3xl">
+            Payments
+          </h1>
+          <p className="mt-2 text-slate-500">
+            Record customer payments linked to jobs where possible.
+          </p>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setShowAdd(true)}
+          className="flex items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-800"
+        >
+          <Plus size={18} />
+          Record Payment
+        </button>
+      </div>
+
+      {error && <DatabaseError message={error} />}
+
+      <div className="mb-6 grid gap-4 sm:grid-cols-3">
+        <MiniStat
+          title="Payments"
+          value={loading ? "…" : filtered.length}
+        />
+        <MiniStat
+          title="Total received"
+          value={loading ? "…" : formatMoney(totalAmount)}
+        />
+        <MiniStat
+          title="Customers"
+          value={loading ? "…" : customers.length}
+        />
+      </div>
+
+      <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="relative">
+          <Search
+            size={18}
+            className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+          />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search by customer, method, reference, staff..."
+            className="w-full rounded-xl border border-slate-200 py-3 pl-10 pr-4 text-sm outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
+          />
+        </div>
+      </div>
+
+      <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+        <div className="border-b border-slate-100 p-5">
+          <h2 className="font-semibold">Payment list</h2>
+          <p className="mt-1 text-sm text-slate-500">
+            {loading
+              ? "Loading payments..."
+              : `${filtered.length} payment${filtered.length === 1 ? "" : "s"}`}
+          </p>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[900px]">
+            <thead className="bg-slate-50">
+              <tr className="text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                <th className="px-5 py-4">Customer</th>
+                <th className="px-5 py-4">Amount</th>
+                <th className="px-5 py-4">Method</th>
+                <th className="px-5 py-4">Date</th>
+                <th className="px-5 py-4">Request</th>
+                <th className="px-5 py-4">Recorded by</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {loading ? (
+                <tr>
+                  <td
+                    colSpan="6"
+                    className="px-5 py-12 text-center text-slate-500"
+                  >
+                    Loading payments...
+                  </td>
+                </tr>
+              ) : filtered.length > 0 ? (
+                filtered.map((payment) => (
+                  <tr key={payment.id} className="hover:bg-slate-50">
+                    <td className="px-5 py-4">
+                      <p className="font-medium">
+                        {payment.customer?.name || "Unknown"}
+                      </p>
+                      {payment.reference ? (
+                        <p className="text-xs text-slate-400">
+                          Ref: {payment.reference}
+                        </p>
+                      ) : null}
+                    </td>
+                    <td className="px-5 py-4 text-sm font-semibold text-emerald-700">
+                      {formatMoney(payment.amount)}
+                    </td>
+                    <td className="px-5 py-4 text-sm text-slate-600">
+                      {payment.payment_method}
+                    </td>
+                    <td className="px-5 py-4 text-sm text-slate-600">
+                      {payment.payment_date}
+                    </td>
+                    <td className="px-5 py-4 text-sm text-slate-600">
+                      {payment.request
+                        ? `${payment.request.service} · ${payment.request.location}`
+                        : "—"}
+                    </td>
+                    <td className="px-5 py-4 text-sm text-slate-600">
+                      {payment.creator?.full_name || "—"}
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan="6" className="px-5 py-12 text-center">
+                    <CreditCard
+                      size={30}
+                      className="mx-auto text-slate-300"
+                    />
+                    <p className="mt-3 font-medium">No payments yet</p>
+                    <p className="mt-1 text-sm text-slate-500">
+                      Record the first customer payment to start tracking revenue.
+                    </p>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {showAdd && (
+        <AddPaymentModal
+          customers={customers}
+          requests={requests}
+          onClose={() => setShowAdd(false)}
+          onSave={addPayment}
+        />
+      )}
+    </div>
+  );
+}
+
+
+function AddPaymentModal({ customers, requests, onClose, onSave }) {
+  const [form, setForm] = useState({
+    customerId: "",
+    requestId: "",
+    amount: "",
+    paymentDate: new Date().toISOString().slice(0, 10),
+    paymentMethod: "M-Pesa",
+    reference: "",
+    notes: "",
+  });
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const updateField = (field, value) => {
+    setForm((current) => ({ ...current, [field]: value }));
+  };
+
+  const customerRequests = requests.filter(
+    (request) =>
+      !form.customerId || request.customer_id === form.customerId
+  );
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    setError("");
+
+    if (!form.customerId) {
+      setError("Please select a customer.");
+      return;
+    }
+    if (!form.amount || Number(form.amount) <= 0) {
+      setError("Amount must be greater than zero.");
+      return;
+    }
+    if (!form.paymentDate) {
+      setError("Please select the payment date.");
+      return;
+    }
+    if (!form.paymentMethod) {
+      setError("Please select a payment method.");
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await onSave(form);
+    } catch (err) {
+      setError(err?.message || "Unable to save payment.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal title="Record payment" onClose={onClose}>
+      <form onSubmit={handleSubmit} className="space-y-5">
+        {error ? (
+          <div className="rounded-xl bg-red-50 p-3 text-sm text-red-700">
+            {error}
+          </div>
+        ) : null}
+
+        <FormSelect
+          label="Customer"
+          value={form.customerId}
+          onChange={(value) => {
+            updateField("customerId", value);
+            updateField("requestId", "");
+          }}
+          options={customers.map((c) => ({
+            value: c.id,
+            label: c.name,
+          }))}
+          placeholder="Select customer"
+        />
+
+        <FormSelect
+          label="Related request (optional)"
+          value={form.requestId}
+          onChange={(value) => updateField("requestId", value)}
+          options={customerRequests.map((r) => ({
+            value: r.id,
+            label: `${r.service} · ${r.location} · ${r.status}`,
+          }))}
+          placeholder="No specific request"
+        />
+
+        <FormInput
+          label="Amount (KSh)"
+          type="number"
+          value={form.amount}
+          placeholder="e.g. 15000"
+          onChange={(value) => updateField("amount", value)}
+        />
+
+        <FormSelect
+          label="Payment method"
+          value={form.paymentMethod}
+          onChange={(value) => updateField("paymentMethod", value)}
+          options={paymentMethods}
+          placeholder="Select method"
+        />
+
+        <div>
+          <label className="mb-2 block text-sm font-medium">
+            Payment date
+          </label>
+          <div className="relative">
+            <CalendarDays
+              size={17}
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+            />
+            <input
+              type="date"
+              value={form.paymentDate}
+              onChange={(e) => updateField("paymentDate", e.target.value)}
+              className="w-full rounded-xl border border-slate-200 py-3 pl-10 pr-4 text-sm outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
+            />
+          </div>
+        </div>
+
+        <FormInput
+          label="Reference"
+          value={form.reference}
+          placeholder="e.g. M-Pesa code"
+          onChange={(value) => updateField("reference", value)}
+        />
+
+        <div>
+          <label className="mb-2 block text-sm font-medium">
+            Notes
+            <span className="ml-1 font-normal text-slate-400">
+              (optional)
+            </span>
+          </label>
+          <textarea
+            rows="3"
+            value={form.notes}
+            onChange={(e) => updateField("notes", e.target.value)}
+            placeholder="Any extra details..."
+            className="w-full resize-none rounded-xl border border-slate-200 px-4 py-3 text-sm outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
+          />
+        </div>
+
+        <ModalButtons onClose={onClose} saving={saving} />
+      </form>
+    </Modal>
+  );
+}
+
+
+/* =========================================
+   EXPENSES
+========================================= */
+
+function ExpensesPage({ currentUser }) {
+  const [expenses, setExpenses] = useState([]);
+  const [tractors, setTractors] = useState([]);
+  const [requests, setRequests] = useState([]);
+  const [search, setSearch] = useState("");
+  const [showAdd, setShowAdd] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const loadExpenses = async () => {
+    setLoading(true);
+    setError("");
+
+    const [expensesResult, tractorsResult, requestsResult] =
+      await Promise.all([
+        supabase
+          .from("expenses")
+          .select(`
+            id,
+            category,
+            description,
+            amount,
+            expense_date,
+            tractor_id,
+            request_id,
+            reference,
+            notes,
+            created_at,
+            created_by,
+            tractor:tractors (
+              id,
+              name,
+              registration_number
+            ),
+            request:requests (
+              id,
+              service,
+              location,
+              status
+            ),
+            creator:profiles!created_by (
+              id,
+              full_name
+            )
+          `)
+          .order("expense_date", { ascending: false })
+          .order("created_at", { ascending: false }),
+        supabase
+          .from("tractors")
+          .select("id, name, registration_number, status")
+          .order("name"),
+        supabase
+          .from("requests")
+          .select("id, service, location, status")
+          .order("created_at", { ascending: false }),
+      ]);
+
+    if (expensesResult.error) {
+      console.error("Error loading expenses:", expensesResult.error);
+      setError(expensesResult.error.message);
+      setLoading(false);
+      return;
+    }
+    if (tractorsResult.error) {
+      setError(tractorsResult.error.message);
+      setLoading(false);
+      return;
+    }
+    if (requestsResult.error) {
+      setError(requestsResult.error.message);
+      setLoading(false);
+      return;
+    }
+
+    setExpenses(expensesResult.data || []);
+    setTractors(tractorsResult.data || []);
+    setRequests(requestsResult.data || []);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    loadExpenses();
+  }, []);
+
+  const filtered = expenses.filter((expense) => {
+    const q = search.toLowerCase();
+    return (
+      (expense.category || "").toLowerCase().includes(q) ||
+      (expense.description || "").toLowerCase().includes(q) ||
+      (expense.tractor?.name || "").toLowerCase().includes(q) ||
+      (expense.creator?.full_name || "").toLowerCase().includes(q) ||
+      (expense.reference || "").toLowerCase().includes(q) ||
+      String(expense.amount).includes(q)
+    );
+  });
+
+  const totalAmount = filtered.reduce(
+    (sum, expense) => sum + Number(expense.amount || 0),
+    0
+  );
+
+  const addExpense = async (form) => {
+    setError("");
+
+    if (!currentUser?.id) {
+      setError("You must be signed in to record an expense.");
+      return;
+    }
+
+    const { error: insertError } = await supabase.from("expenses").insert({
+      category: form.category,
+      description: form.description.trim(),
+      amount: Number(form.amount),
+      expense_date: form.expenseDate,
+      tractor_id: form.tractorId || null,
+      request_id: form.requestId || null,
+      reference: form.reference?.trim() || null,
+      notes: form.notes?.trim() || null,
+      created_by: currentUser.id,
+    });
+
+    if (insertError) {
+      console.error("Error adding expense:", insertError);
+      setError(insertError.message);
+      return;
+    }
+
+    setShowAdd(false);
+    await loadExpenses();
+  };
+
+  return (
+    <div>
+      <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="text-sm font-medium text-slate-500">
+            Money out
+          </p>
+          <h1 className="mt-1 text-2xl font-bold tracking-tight sm:text-3xl">
+            Expenses
+          </h1>
+          <p className="mt-2 text-slate-500">
+            Track fuel, repairs, labour and other operating costs.
+          </p>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setShowAdd(true)}
+          className="flex items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-800"
+        >
+          <Plus size={18} />
+          Record Expense
+        </button>
+      </div>
+
+      {error && <DatabaseError message={error} />}
+
+      <div className="mb-6 grid gap-4 sm:grid-cols-3">
+        <MiniStat
+          title="Expenses"
+          value={loading ? "…" : filtered.length}
+        />
+        <MiniStat
+          title="Total spent"
+          value={loading ? "…" : formatMoney(totalAmount)}
+        />
+        <MiniStat
+          title="Fuel entries"
+          value={
+            loading
+              ? "…"
+              : expenses.filter((e) => e.category === "Fuel").length
+          }
+        />
+      </div>
+
+      <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="relative">
+          <Search
+            size={18}
+            className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+          />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search by category, description, tractor, staff..."
+            className="w-full rounded-xl border border-slate-200 py-3 pl-10 pr-4 text-sm outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
+          />
+        </div>
+      </div>
+
+      <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+        <div className="border-b border-slate-100 p-5">
+          <h2 className="font-semibold">Expense list</h2>
+          <p className="mt-1 text-sm text-slate-500">
+            {loading
+              ? "Loading expenses..."
+              : `${filtered.length} expense${filtered.length === 1 ? "" : "s"}`}
+          </p>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[900px]">
+            <thead className="bg-slate-50">
+              <tr className="text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                <th className="px-5 py-4">Category</th>
+                <th className="px-5 py-4">Description</th>
+                <th className="px-5 py-4">Amount</th>
+                <th className="px-5 py-4">Date</th>
+                <th className="px-5 py-4">Tractor</th>
+                <th className="px-5 py-4">Recorded by</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {loading ? (
+                <tr>
+                  <td
+                    colSpan="6"
+                    className="px-5 py-12 text-center text-slate-500"
+                  >
+                    Loading expenses...
+                  </td>
+                </tr>
+              ) : filtered.length > 0 ? (
+                filtered.map((expense) => (
+                  <tr key={expense.id} className="hover:bg-slate-50">
+                    <td className="px-5 py-4">
+                      <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold">
+                        {expense.category}
+                      </span>
+                    </td>
+                    <td className="px-5 py-4">
+                      <p className="font-medium">{expense.description}</p>
+                      {expense.reference ? (
+                        <p className="text-xs text-slate-400">
+                          Ref: {expense.reference}
+                        </p>
+                      ) : null}
+                    </td>
+                    <td className="px-5 py-4 text-sm font-semibold text-red-700">
+                      {formatMoney(expense.amount)}
+                    </td>
+                    <td className="px-5 py-4 text-sm text-slate-600">
+                      {expense.expense_date}
+                    </td>
+                    <td className="px-5 py-4 text-sm text-slate-600">
+                      {expense.tractor
+                        ? `${expense.tractor.name}${
+                            expense.tractor.registration_number
+                              ? ` · ${expense.tractor.registration_number}`
+                              : ""
+                          }`
+                        : "—"}
+                    </td>
+                    <td className="px-5 py-4 text-sm text-slate-600">
+                      {expense.creator?.full_name || "—"}
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan="6" className="px-5 py-12 text-center">
+                    <Wallet
+                      size={30}
+                      className="mx-auto text-slate-300"
+                    />
+                    <p className="mt-3 font-medium">No expenses yet</p>
+                    <p className="mt-1 text-sm text-slate-500">
+                      Record fuel, repairs and other costs to track spend.
+                    </p>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {showAdd && (
+        <AddExpenseModal
+          tractors={tractors}
+          requests={requests}
+          onClose={() => setShowAdd(false)}
+          onSave={addExpense}
+        />
+      )}
+    </div>
+  );
+}
+
+
+function AddExpenseModal({ tractors, requests, onClose, onSave }) {
+  const [form, setForm] = useState({
+    category: "Fuel",
+    description: "",
+    amount: "",
+    expenseDate: new Date().toISOString().slice(0, 10),
+    tractorId: "",
+    requestId: "",
+    reference: "",
+    notes: "",
+  });
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const updateField = (field, value) => {
+    setForm((current) => ({ ...current, [field]: value }));
+  };
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    setError("");
+
+    if (!form.category) {
+      setError("Please select a category.");
+      return;
+    }
+    if (!form.description.trim()) {
+      setError("Please enter a description.");
+      return;
+    }
+    if (!form.amount || Number(form.amount) <= 0) {
+      setError("Amount must be greater than zero.");
+      return;
+    }
+    if (!form.expenseDate) {
+      setError("Please select the expense date.");
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await onSave(form);
+    } catch (err) {
+      setError(err?.message || "Unable to save expense.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal title="Record expense" onClose={onClose}>
+      <form onSubmit={handleSubmit} className="space-y-5">
+        {error ? (
+          <div className="rounded-xl bg-red-50 p-3 text-sm text-red-700">
+            {error}
+          </div>
+        ) : null}
+
+        <FormSelect
+          label="Category"
+          value={form.category}
+          onChange={(value) => updateField("category", value)}
+          options={expenseCategories}
+          placeholder="Select category"
+        />
+
+        <FormInput
+          label="Description"
+          value={form.description}
+          placeholder="e.g. Diesel for MF 375"
+          onChange={(value) => updateField("description", value)}
+        />
+
+        <FormInput
+          label="Amount (KSh)"
+          type="number"
+          value={form.amount}
+          placeholder="e.g. 8500"
+          onChange={(value) => updateField("amount", value)}
+        />
+
+        <div>
+          <label className="mb-2 block text-sm font-medium">
+            Expense date
+          </label>
+          <div className="relative">
+            <CalendarDays
+              size={17}
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+            />
+            <input
+              type="date"
+              value={form.expenseDate}
+              onChange={(e) => updateField("expenseDate", e.target.value)}
+              className="w-full rounded-xl border border-slate-200 py-3 pl-10 pr-4 text-sm outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
+            />
+          </div>
+        </div>
+
+        <FormSelect
+          label="Tractor (optional)"
+          value={form.tractorId}
+          onChange={(value) => updateField("tractorId", value)}
+          options={tractors.map((t) => ({
+            value: t.id,
+            label: `${t.name}${
+              t.registration_number ? ` · ${t.registration_number}` : ""
+            }`,
+          }))}
+          placeholder="No specific tractor"
+        />
+
+        <FormSelect
+          label="Related request (optional)"
+          value={form.requestId}
+          onChange={(value) => updateField("requestId", value)}
+          options={requests.map((r) => ({
+            value: r.id,
+            label: `${r.service} · ${r.location} · ${r.status}`,
+          }))}
+          placeholder="No specific request"
+        />
+
+        <FormInput
+          label="Reference"
+          value={form.reference}
+          placeholder="e.g. receipt number"
+          onChange={(value) => updateField("reference", value)}
+        />
+
+        <div>
+          <label className="mb-2 block text-sm font-medium">
+            Notes
+            <span className="ml-1 font-normal text-slate-400">
+              (optional)
+            </span>
+          </label>
+          <textarea
+            rows="3"
+            value={form.notes}
+            onChange={(e) => updateField("notes", e.target.value)}
+            placeholder="Any extra details..."
+            className="w-full resize-none rounded-xl border border-slate-200 px-4 py-3 text-sm outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
+          />
+        </div>
+
+        <ModalButtons onClose={onClose} saving={saving} />
+      </form>
+    </Modal>
+  );
+}
 
 
 /* =========================================

@@ -2064,6 +2064,131 @@ function DetailRow({ icon, label, value }) {
    REQUESTS
 ========================================= */
 
+
+/* =========================================
+   TRACTOR OPERATIONS HELPERS
+========================================= */
+
+async function syncTractorStatusFromRequest({
+  tractorId,
+  nextRequestStatus,
+  previousRequestStatus = null,
+}) {
+  if (!tractorId) return { error: null };
+
+  // Starting work → tractor is Working
+  if (nextRequestStatus === "In Progress") {
+    const { error } = await supabase
+      .from("tractors")
+      .update({
+        status: "Working",
+      })
+      .eq("id", tractorId);
+
+    return { error };
+  }
+
+  // Leaving active work → free tractor if no other In Progress jobs
+  const releasingStatuses = ["Completed", "Cancelled", "Pending"];
+  const wasActive =
+    previousRequestStatus === "In Progress" ||
+    previousRequestStatus === null;
+
+  if (
+    releasingStatuses.includes(nextRequestStatus) &&
+    (previousRequestStatus === "In Progress" ||
+      nextRequestStatus === "Completed" ||
+      nextRequestStatus === "Cancelled")
+  ) {
+    const { data: activeJobs, error: activeError } = await supabase
+      .from("requests")
+      .select("id")
+      .eq("tractor_id", tractorId)
+      .eq("status", "In Progress");
+
+    if (activeError) {
+      return { error: activeError };
+    }
+
+    // If other In Progress jobs remain, keep Working
+    if (activeJobs && activeJobs.length > 0) {
+      return { error: null };
+    }
+
+    // Only auto-return to Available when currently Working
+    // (do not override Maintenance set by an administrator)
+    const { data: tractor, error: tractorError } = await supabase
+      .from("tractors")
+      .select("id, status")
+      .eq("id", tractorId)
+      .single();
+
+    if (tractorError) {
+      return { error: tractorError };
+    }
+
+    if (tractor?.status === "Working") {
+      const { error } = await supabase
+        .from("tractors")
+        .update({
+          status: "Available",
+
+        })
+        .eq("id", tractorId);
+
+      return { error };
+    }
+  }
+
+  return { error: null };
+}
+
+async function assertTractorAssignable(tractorId, { allowWorking = false } = {}) {
+  if (!tractorId) {
+    return { error: null, tractor: null };
+  }
+
+  const { data: tractor, error } = await supabase
+    .from("tractors")
+    .select("id, name, status")
+    .eq("id", tractorId)
+    .single();
+
+  if (error) {
+    return { error, tractor: null };
+  }
+
+  if (tractor.status === "Inactive") {
+    return {
+      error: {
+        message: `"${tractor.name}" is Inactive and cannot be assigned.`,
+      },
+      tractor,
+    };
+  }
+
+  if (tractor.status === "Maintenance") {
+    return {
+      error: {
+        message: `"${tractor.name}" is in Maintenance and cannot be assigned.`,
+      },
+      tractor,
+    };
+  }
+
+  if (tractor.status === "Working" && !allowWorking) {
+    return {
+      error: {
+        message: `"${tractor.name}" is already Working on another job. Choose an Available tractor.`,
+      },
+      tractor,
+    };
+  }
+
+  return { error: null, tractor };
+}
+
+
 function RequestsPage({ currentUser }) {
 
   const [requests, setRequests] = useState([]);
@@ -2264,14 +2389,26 @@ function RequestsPage({ currentUser }) {
       return;
     }
 
+    const tractorId = request.tractorId || null;
+
+    // Block conflicting tractor assignments
+    const { error: assignError } =
+      await assertTractorAssignable(tractorId, {
+        allowWorking: false,
+      });
+
+    if (assignError) {
+      setError(assignError.message);
+      return;
+    }
+
     const { error } = await supabase
       .from("requests")
       .insert({
         customer_id:
           request.customerId,
 
-        tractor_id:
-          request.tractorId || null,
+        tractor_id: tractorId,
 
         service:
           request.service,
@@ -2308,6 +2445,25 @@ function RequestsPage({ currentUser }) {
 
     }
 
+    // If created already In Progress, mark tractor Working
+    if (request.status === "In Progress" && tractorId) {
+      const { error: syncError } =
+        await syncTractorStatusFromRequest({
+          tractorId,
+          nextRequestStatus: "In Progress",
+          previousRequestStatus: null,
+        });
+
+      if (syncError) {
+        console.error(
+          "Error syncing tractor status:",
+          syncError
+        );
+        setError(
+          `Request saved, but tractor status was not updated: ${syncError.message}`
+        );
+      }
+    }
 
     setShowAddRequest(false);
 
@@ -2323,6 +2479,56 @@ function RequestsPage({ currentUser }) {
 
       setError("");
 
+      const existing = requests.find(
+        (request) => request.id === id
+      );
+
+      if (!existing) {
+        setError("Request not found.");
+        return;
+      }
+
+      const previousStatus = existing.status;
+      const tractorId =
+        existing.tractor_id ||
+        existing.tractor?.id ||
+        null;
+
+      // Moving into In Progress: tractor must be assignable
+      if (
+        status === "In Progress" &&
+        tractorId &&
+        previousStatus !== "In Progress"
+      ) {
+        const { error: assignError } =
+          await assertTractorAssignable(tractorId, {
+            // Allow if this tractor is Working only because of THIS request
+            allowWorking: false,
+          });
+
+        // If Working, check whether it's only this request or another job
+        if (assignError) {
+          const { data: otherJobs, error: otherError } =
+            await supabase
+              .from("requests")
+              .select("id")
+              .eq("tractor_id", tractorId)
+              .eq("status", "In Progress")
+              .neq("id", id);
+
+          if (otherError) {
+            setError(otherError.message);
+            return;
+          }
+
+          if (otherJobs && otherJobs.length > 0) {
+            setError(assignError.message);
+            return;
+          }
+
+          // Tractor is Working but no other In Progress jobs — allow
+        }
+      }
 
       const { error } =
         await supabase
@@ -2345,6 +2551,25 @@ function RequestsPage({ currentUser }) {
         return;
       }
 
+      // Sync fleet status with operations
+      if (tractorId && previousStatus !== status) {
+        const { error: syncError } =
+          await syncTractorStatusFromRequest({
+            tractorId,
+            nextRequestStatus: status,
+            previousRequestStatus: previousStatus,
+          });
+
+        if (syncError) {
+          console.error(
+            "Error syncing tractor status:",
+            syncError
+          );
+          setError(
+            `Request updated, but tractor status was not synced: ${syncError.message}`
+          );
+        }
+      }
 
       setRequests(
         (currentRequests) =>
@@ -2359,6 +2584,8 @@ function RequestsPage({ currentUser }) {
           )
       );
 
+      // Refresh tractor list used by Add Request modal
+      await loadRequests();
     };
 
 
@@ -2917,15 +3144,14 @@ function AddRequestModal({
               value
             )
           }
-          options={tractors
+                    options={tractors
             .filter(
               (tractor) =>
-                tractor.status !==
-                "Inactive"
+                tractor.status === "Available"
             )
             .map((tractor) => ({
               value: tractor.id,
-              label: `${tractor.name} â€” ${tractor.status}`,
+              label: `${tractor.name} — ${tractor.registration_number || tractor.model || tractor.status}`,
             }))}
           placeholder="Select tractor"
         />
@@ -3513,7 +3739,6 @@ function TractorsPage({ currentUser }) {
         .from("tractors")
         .update({
           ...payload,
-          updated_at: new Date().toISOString(),
         })
         .eq("id", editingTractor.id)
         .select()
@@ -3550,8 +3775,7 @@ function TractorsPage({ currentUser }) {
     const { error: updateError } = await supabase
       .from("tractors")
       .update({
-        status,
-        updated_at: new Date().toISOString(),
+        status
       })
       .eq("id", tractor.id);
 

@@ -25,6 +25,7 @@ import {
   ChevronDown,
   Trash2,
   Eye,
+  Pencil,
 } from "lucide-react";
 
 import { useEffect, useRef, useState } from "react";
@@ -55,6 +56,13 @@ const requestStatuses = [
   "In Progress",
   "Completed",
   "Cancelled",
+];
+
+const tractorStatuses = [
+  "Available",
+  "Working",
+  "Maintenance",
+  "Inactive",
 ];
 
 
@@ -678,10 +686,15 @@ function App() {
             <StaffPage />
           )}
 
+          {currentPage === "Tractors" && (
+            <TractorsPage currentUser={profile} />
+          )}
+
           {currentPage !== "Dashboard" &&
             currentPage !== "Customers" &&
             currentPage !== "Requests" &&
-            currentPage !== "Staff" && (
+            currentPage !== "Staff" &&
+            currentPage !== "Tractors" && (
               <ComingSoonPage page={currentPage} />
             )}
 
@@ -2090,7 +2103,6 @@ function RequestsPage({ currentUser }) {
           status,
           notes,
           created_at,
-          updated_at,
           created_by,
           customer:customers (
             id,
@@ -3393,6 +3405,623 @@ function RequestStatus({
   );
 }
 
+
+
+
+/* =========================================
+   TRACTORS
+========================================= */
+
+function TractorsPage({ currentUser }) {
+  const [tractors, setTractors] = useState([]);
+  const [search, setSearch] = useState("");
+  const [showForm, setShowForm] = useState(false);
+  const [editingTractor, setEditingTractor] = useState(null);
+  const [selectedTractor, setSelectedTractor] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const isAdmin = currentUser?.role === "owner";
+
+  const loadTractors = async () => {
+    setLoading(true);
+    setError("");
+
+    const { data, error: queryError } = await supabase
+      .from("tractors")
+      .select(`
+        id,
+        name,
+        registration_number,
+        model,
+        status,
+        notes,
+        created_at
+      `)
+      .order("name", { ascending: true });
+
+    if (queryError) {
+      console.error("Error loading tractors:", queryError);
+      setError(queryError.message);
+      setLoading(false);
+      return;
+    }
+
+    setTractors(data || []);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    loadTractors();
+  }, []);
+
+  const filteredTractors = tractors.filter((tractor) => {
+    const searchText = search.toLowerCase();
+    return (
+      (tractor.name || "").toLowerCase().includes(searchText) ||
+      (tractor.registration_number || "")
+        .toLowerCase()
+        .includes(searchText) ||
+      (tractor.model || "").toLowerCase().includes(searchText) ||
+      (tractor.status || "").toLowerCase().includes(searchText)
+    );
+  });
+
+  const availableCount = tractors.filter(
+    (t) => t.status === "Available"
+  ).length;
+  const workingCount = tractors.filter(
+    (t) => t.status === "Working"
+  ).length;
+  const inactiveCount = tractors.filter(
+    (t) => t.status === "Inactive"
+  ).length;
+
+  const openAdd = () => {
+    setEditingTractor(null);
+    setShowForm(true);
+  };
+
+  const openEdit = (tractor) => {
+    setSelectedTractor(null);
+    setEditingTractor(tractor);
+    setShowForm(true);
+  };
+
+  const saveTractor = async (form) => {
+    if (!isAdmin) {
+      setError("Only administrators can manage tractors.");
+      return;
+    }
+
+    setSaving(true);
+    setError("");
+
+    const payload = {
+      name: form.name.trim(),
+      registration_number: form.registration_number.trim(),
+      model: form.model.trim() || null,
+      status: form.status,
+      notes: form.notes?.trim() || null,
+    };
+
+    let result;
+
+    if (editingTractor?.id) {
+      result = await supabase
+        .from("tractors")
+        .update({
+          ...payload,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", editingTractor.id)
+        .select()
+        .single();
+    } else {
+      result = await supabase
+        .from("tractors")
+        .insert(payload)
+        .select()
+        .single();
+    }
+
+    setSaving(false);
+
+    if (result.error) {
+      console.error("Error saving tractor:", result.error);
+      setError(result.error.message);
+      return;
+    }
+
+    setShowForm(false);
+    setEditingTractor(null);
+    await loadTractors();
+  };
+
+  const setTractorStatus = async (tractor, status) => {
+    if (!isAdmin) {
+      setError("Only administrators can manage tractors.");
+      return;
+    }
+
+    setError("");
+
+    const { error: updateError } = await supabase
+      .from("tractors")
+      .update({
+        status,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", tractor.id);
+
+    if (updateError) {
+      console.error("Error updating tractor status:", updateError);
+      setError(updateError.message);
+      return;
+    }
+
+    setSelectedTractor(null);
+    await loadTractors();
+  };
+
+  const deactivateTractor = async (tractor) => {
+    const confirmed = window.confirm(
+      `Deactivate "${tractor.name}"?\n\nIt will no longer appear in the Add Request tractor list.`
+    );
+    if (!confirmed) return;
+    await setTractorStatus(tractor, "Inactive");
+  };
+
+  return (
+    <div>
+      <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="text-sm font-medium text-slate-500">
+            Fleet management
+          </p>
+          <h1 className="mt-1 text-2xl font-bold tracking-tight sm:text-3xl">
+            Tractors
+          </h1>
+          <p className="mt-2 text-slate-500">
+            Manage tractors stored in Supabase. Active units appear in
+            the request form automatically.
+          </p>
+        </div>
+
+        {isAdmin ? (
+          <button
+            type="button"
+            onClick={openAdd}
+            className="flex items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-800"
+          >
+            <Plus size={18} />
+            Add Tractor
+          </button>
+        ) : null}
+      </div>
+
+      {error && <DatabaseError message={error} />}
+
+      {!isAdmin ? (
+        <div className="mb-6 rounded-xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-800">
+          You can view the fleet. Only administrators can add, edit, or
+          deactivate tractors.
+        </div>
+      ) : null}
+
+      <div className="mb-6 grid gap-4 sm:grid-cols-3">
+        <MiniStat
+          title="Available"
+          value={loading ? "…" : availableCount}
+        />
+        <MiniStat
+          title="Working"
+          value={loading ? "…" : workingCount}
+        />
+        <MiniStat
+          title="Inactive"
+          value={loading ? "…" : inactiveCount}
+        />
+      </div>
+
+      <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="relative">
+          <Search
+            size={18}
+            className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+          />
+          <input
+            type="text"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Search by name, registration, model or status..."
+            className="w-full rounded-xl border border-slate-200 py-3 pl-10 pr-4 text-sm outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
+          />
+        </div>
+      </div>
+
+      <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+        <div className="border-b border-slate-100 p-5">
+          <h2 className="font-semibold">Tractor list</h2>
+          <p className="mt-1 text-sm text-slate-500">
+            {loading
+              ? "Loading tractors..."
+              : `${filteredTractors.length} tractor${
+                  filteredTractors.length === 1 ? "" : "s"
+                }`}
+          </p>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[720px]">
+            <thead className="bg-slate-50">
+              <tr className="text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                <th className="px-5 py-4">Name</th>
+                <th className="px-5 py-4">Registration</th>
+                <th className="px-5 py-4">Model</th>
+                <th className="px-5 py-4">Status</th>
+                <th className="px-5 py-4">Action</th>
+              </tr>
+            </thead>
+
+            <tbody className="divide-y divide-slate-100">
+              {loading ? (
+                <tr>
+                  <td
+                    colSpan="5"
+                    className="px-5 py-12 text-center text-slate-500"
+                  >
+                    Loading tractors...
+                  </td>
+                </tr>
+              ) : filteredTractors.length > 0 ? (
+                filteredTractors.map((tractor) => (
+                  <tr key={tractor.id} className="hover:bg-slate-50">
+                    <td className="px-5 py-4">
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100">
+                          <Tractor size={18} />
+                        </div>
+                        <div>
+                          <p className="font-medium">{tractor.name}</p>
+                          {tractor.notes ? (
+                            <p className="text-xs text-slate-400 line-clamp-1">
+                              {tractor.notes}
+                            </p>
+                          ) : null}
+                        </div>
+                      </div>
+                    </td>
+
+                    <td className="px-5 py-4 text-sm font-medium text-slate-700">
+                      {tractor.registration_number || "—"}
+                    </td>
+
+                    <td className="px-5 py-4 text-sm text-slate-600">
+                      {tractor.model || "—"}
+                    </td>
+
+                    <td className="px-5 py-4">
+                      <TractorStatusBadge status={tractor.status} />
+                    </td>
+
+                    <td className="px-5 py-4">
+                      <div className="flex items-center gap-3">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedTractor(tractor)}
+                          className="inline-flex items-center gap-1 text-sm font-semibold text-slate-700 hover:text-slate-950"
+                        >
+                          <Eye size={15} />
+                          View
+                        </button>
+
+                        {isAdmin ? (
+                          <button
+                            type="button"
+                            onClick={() => openEdit(tractor)}
+                            className="inline-flex items-center gap-1 text-sm font-semibold text-slate-700 hover:text-slate-950"
+                          >
+                            <Pencil size={15} />
+                            Edit
+                          </button>
+                        ) : null}
+                      </div>
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan="5" className="px-5 py-12 text-center">
+                    <Tractor
+                      size={30}
+                      className="mx-auto text-slate-300"
+                    />
+                    <p className="mt-3 font-medium">No tractors found</p>
+                    <p className="mt-1 text-sm text-slate-500">
+                      {isAdmin
+                        ? "Add your first tractor to start assigning jobs."
+                        : "The tractors table is currently empty."}
+                    </p>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {showForm && (
+        <TractorFormModal
+          tractor={editingTractor}
+          saving={saving}
+          onClose={() => {
+            setShowForm(false);
+            setEditingTractor(null);
+          }}
+          onSave={saveTractor}
+        />
+      )}
+
+      {selectedTractor && (
+        <ViewTractorModal
+          tractor={selectedTractor}
+          isAdmin={isAdmin}
+          onClose={() => setSelectedTractor(null)}
+          onEdit={() => openEdit(selectedTractor)}
+          onDeactivate={() => deactivateTractor(selectedTractor)}
+          onActivate={() =>
+            setTractorStatus(selectedTractor, "Available")
+          }
+        />
+      )}
+    </div>
+  );
+}
+
+
+function TractorStatusBadge({ status }) {
+  const styles = {
+    Available: "bg-emerald-50 text-emerald-700",
+    Working: "bg-blue-50 text-blue-700",
+    Maintenance: "bg-amber-50 text-amber-700",
+    Inactive: "bg-slate-100 text-slate-600",
+  };
+
+  return (
+    <span
+      className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${
+        styles[status] || "bg-slate-100 text-slate-600"
+      }`}
+    >
+      {status || "Unknown"}
+    </span>
+  );
+}
+
+
+function TractorFormModal({ tractor, onClose, onSave, saving = false }) {
+  const isEdit = Boolean(tractor?.id);
+
+  const [form, setForm] = useState({
+    name: tractor?.name || "",
+    registration_number: tractor?.registration_number || "",
+    model: tractor?.model || "",
+    status: tractor?.status || "Available",
+    notes: tractor?.notes || "",
+  });
+  const [formError, setFormError] = useState("");
+
+  const updateField = (field, value) => {
+    setForm((current) => ({
+      ...current,
+      [field]: value,
+    }));
+  };
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    setFormError("");
+
+    if (!form.name.trim()) {
+      setFormError("Please enter the tractor name.");
+      return;
+    }
+
+    if (!form.registration_number.trim()) {
+      setFormError("Please enter the registration number.");
+      return;
+    }
+
+    if (!form.status) {
+      setFormError("Please select a status.");
+      return;
+    }
+
+    try {
+      await onSave(form);
+    } catch (err) {
+      setFormError(err?.message || "Unable to save tractor.");
+    }
+  };
+
+  return (
+    <Modal
+      title={isEdit ? "Edit tractor" : "Add tractor"}
+      onClose={onClose}
+    >
+      <form onSubmit={handleSubmit} className="space-y-5">
+        {formError ? (
+          <div className="rounded-xl bg-red-50 p-3 text-sm text-red-700">
+            {formError}
+          </div>
+        ) : null}
+
+        <FormInput
+          label="Tractor name"
+          value={form.name}
+          placeholder="e.g. Massey Ferguson"
+          icon={<Tractor size={17} />}
+          onChange={(value) => updateField("name", value)}
+        />
+
+        <FormInput
+          label="Registration number"
+          value={form.registration_number}
+          placeholder="e.g. KDA 123A"
+          onChange={(value) =>
+            updateField("registration_number", value)
+          }
+        />
+
+        <FormInput
+          label="Model"
+          value={form.model}
+          placeholder="e.g. MF 375"
+          onChange={(value) => updateField("model", value)}
+        />
+
+        <FormSelect
+          label="Status"
+          value={form.status}
+          onChange={(value) => updateField("status", value)}
+          options={tractorStatuses}
+          placeholder="Select status"
+        />
+
+        <div>
+          <label className="mb-2 block text-sm font-medium">
+            Notes
+            <span className="ml-1 font-normal text-slate-400">
+              (optional)
+            </span>
+          </label>
+          <textarea
+            rows="3"
+            value={form.notes}
+            onChange={(event) =>
+              updateField("notes", event.target.value)
+            }
+            placeholder="Service notes, attachments, location..."
+            className="w-full resize-none rounded-xl border border-slate-200 px-4 py-3 text-sm outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
+          />
+        </div>
+
+        <ModalButtons onClose={onClose} saving={saving} />
+      </form>
+    </Modal>
+  );
+}
+
+
+function ViewTractorModal({
+  tractor,
+  isAdmin,
+  onClose,
+  onEdit,
+  onDeactivate,
+  onActivate,
+}) {
+  if (!tractor) return null;
+
+  return (
+    <Modal title="Tractor details" onClose={onClose}>
+      <div className="space-y-5">
+        <div className="flex items-center gap-4">
+          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-100">
+            <Tractor size={24} />
+          </div>
+          <div className="min-w-0">
+            <p className="truncate text-lg font-semibold">
+              {tractor.name}
+            </p>
+            <div className="mt-1">
+              <TractorStatusBadge status={tractor.status} />
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-3 rounded-xl border border-slate-100 bg-slate-50 p-4">
+          <DetailRow
+            icon={<Tractor size={16} />}
+            label="Registration"
+            value={tractor.registration_number || "—"}
+          />
+          <DetailRow
+            icon={<ClipboardList size={16} />}
+            label="Model"
+            value={tractor.model || "—"}
+          />
+          <DetailRow
+            icon={<CalendarDays size={16} />}
+            label="Created"
+            value={
+              tractor.created_at
+                ? new Date(tractor.created_at).toLocaleString()
+                : "—"
+            }
+          />
+        </div>
+
+        {tractor.notes ? (
+          <div>
+            <p className="mb-1 text-sm font-medium text-slate-700">
+              Notes
+            </p>
+            <p className="rounded-xl border border-slate-100 bg-white p-3 text-sm text-slate-600">
+              {tractor.notes}
+            </p>
+          </div>
+        ) : null}
+
+        <div className="flex flex-col-reverse gap-3 border-t border-slate-100 pt-5 sm:flex-row sm:justify-between">
+          {isAdmin ? (
+            <div className="flex flex-col gap-3 sm:flex-row">
+              {tractor.status === "Inactive" ? (
+                <button
+                  type="button"
+                  onClick={onActivate}
+                  className="rounded-xl border border-emerald-200 bg-emerald-50 px-5 py-3 text-sm font-semibold text-emerald-700 hover:bg-emerald-100"
+                >
+                  Set Available
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={onDeactivate}
+                  className="flex items-center justify-center gap-2 rounded-xl border border-red-200 bg-red-50 px-5 py-3 text-sm font-semibold text-red-700 hover:bg-red-100"
+                >
+                  <Trash2 size={17} />
+                  Deactivate
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={onEdit}
+                className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 px-5 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                <Pencil size={17} />
+                Edit
+              </button>
+            </div>
+          ) : (
+            <div />
+          )}
+
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-xl border border-slate-200 px-5 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
 
 
 /* =========================================

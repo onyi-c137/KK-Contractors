@@ -91,6 +91,89 @@ function formatMoney(amount) {
   })}`;
 }
 
+const NOTIF_PREFS_KEY = "kk-notification-prefs";
+
+const defaultNotificationPrefs = {
+  newRequests: true,
+  statusChanges: true,
+  payments: true,
+  expenses: true,
+  tractorMaintenance: true,
+  realtime: true,
+};
+
+function loadNotificationPrefs() {
+  try {
+    const raw = localStorage.getItem(NOTIF_PREFS_KEY);
+    if (!raw) return { ...defaultNotificationPrefs };
+    return { ...defaultNotificationPrefs, ...JSON.parse(raw) };
+  } catch {
+    return { ...defaultNotificationPrefs };
+  }
+}
+
+function saveNotificationPrefs(prefs) {
+  try {
+    localStorage.setItem(NOTIF_PREFS_KEY, JSON.stringify(prefs));
+  } catch {
+    // ignore
+  }
+}
+
+/** Create in-app notifications for active profiles (filtered by role when needed). */
+async function createNotificationsForUsers({
+  userIds,
+  type,
+  title,
+  message,
+}) {
+  if (!userIds?.length) return { error: null };
+
+  const rows = userIds.map((userId) => ({
+    user_id: userId,
+    type,
+    title,
+    message,
+    read: false,
+  }));
+
+  const { error } = await supabase.from("notifications").insert(rows);
+  if (error) {
+    console.error("Notification insert error:", error);
+  }
+  return { error };
+}
+
+async function notifyActiveProfiles({
+  type,
+  title,
+  message,
+  roles = null,
+}) {
+  let query = supabase
+    .from("profiles")
+    .select("id, role")
+    .eq("active", true);
+
+  const { data, error } = await query;
+  if (error) {
+    console.error("Unable to load profiles for notifications:", error);
+    return { error };
+  }
+
+  let targets = data || [];
+  if (roles?.length) {
+    targets = targets.filter((p) => roles.includes(p.role));
+  }
+
+  return createNotificationsForUsers({
+    userIds: targets.map((p) => p.id),
+    type,
+    title,
+    message,
+  });
+}
+
 
 
 /* =========================================
@@ -183,7 +266,7 @@ function AccountMenu({
         className={
           isBottom
             ? "flex w-full items-center gap-3 rounded-xl bg-white/5 p-3 text-left transition hover:bg-white/10"
-            : "flex items-center gap-3 rounded-xl px-2 py-1.5 text-left transition hover:bg-slate-100"
+            : "flex items-center gap-3 rounded-xl px-2 py-1.5 text-left text-slate-900 transition hover:bg-slate-100"
         }
         title="Account menu"
         aria-haspopup="menu"
@@ -370,6 +453,15 @@ function App() {
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [currentPage, setCurrentPage] = useState("Dashboard");
+  const [notificationPrefs, setNotificationPrefs] = useState(
+    () => loadNotificationPrefs()
+  );
+
+  // Clear any leftover theme classes from older builds
+  useEffect(() => {
+    document.documentElement.classList.remove("dark", "light");
+    document.documentElement.style.colorScheme = "light";
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -647,10 +739,10 @@ function App() {
 
       <div className="lg:pl-64">
 
-        <header className="sticky top-0 z-30 flex h-20 items-center justify-between border-b border-slate-200 bg-white/90 px-4 backdrop-blur-md sm:px-6 lg:px-8">
+        <header className="sticky top-0 z-30 flex h-20 items-center justify-between border-b border-slate-200 bg-white px-4 shadow-sm sm:px-6 lg:px-8">
 
           <button
-            className="rounded-lg p-2 hover:bg-slate-100 lg:hidden"
+            className="rounded-lg p-2 text-slate-700 hover:bg-slate-100 lg:hidden"
             onClick={() => setSidebarOpen(true)}
           >
             <Menu size={24} />
@@ -659,13 +751,13 @@ function App() {
 
           <div className="hidden lg:block">
 
-            <p className="text-sm text-slate-500">
+            <p className="text-sm font-medium text-slate-600">
               {profile.role === "owner"
                 ? "Administrator dashboard"
                 : "Staff dashboard"}
             </p>
 
-            <h2 className="text-lg font-semibold">
+            <h2 className="text-lg font-bold text-slate-900">
               {currentPage}
             </h2>
 
@@ -674,11 +766,10 @@ function App() {
 
           <div className="ml-auto flex items-center gap-4">
 
-            <button className="relative rounded-full p-2 hover:bg-slate-100">
-              <Bell size={21} />
-
-              <span className="absolute right-1 top-1 h-2.5 w-2.5 rounded-full bg-red-500" />
-            </button>
+            <NotificationBell
+              userId={profile.id}
+              enabled={notificationPrefs.realtime !== false}
+            />
 
             <div className="hidden h-8 w-px bg-slate-200 sm:block" />
 
@@ -709,7 +800,7 @@ function App() {
           )}
 
           {currentPage === "Staff" && (
-            <StaffPage />
+            <StaffPage currentUser={profile} />
           )}
 
           {currentPage === "Tractors" && (
@@ -724,6 +815,17 @@ function App() {
             <ExpensesPage currentUser={profile} />
           )}
 
+          {currentPage === "Settings" && (
+            <SettingsPage
+              currentUser={profile}
+              notificationPrefs={notificationPrefs}
+              onNotificationPrefsChange={(next) => {
+                setNotificationPrefs(next);
+                saveNotificationPrefs(next);
+              }}
+            />
+          )}
+
           {currentPage === "Reports" && (
             <ReportsPage currentUser={profile} />
           )}
@@ -735,6 +837,7 @@ function App() {
             currentPage !== "Tractors" &&
             currentPage !== "Payments" &&
             currentPage !== "Expenses" &&
+            currentPage !== "Settings" &&
             currentPage !== "Reports" && (
               <ComingSoonPage page={currentPage} />
             )}
@@ -2506,6 +2609,17 @@ function RequestsPage({ currentUser }) {
       }
     }
 
+    const customerLabel =
+      customers.find((c) => c.id === request.customerId)?.name ||
+      "a customer";
+
+    await notifyActiveProfiles({
+      type: "request",
+      title: "New customer request",
+      message: `${request.service} for ${customerLabel} · ${request.location.trim()}`,
+      roles: ["owner", "staff"],
+    });
+
     setShowAddRequest(false);
 
     await loadRequests();
@@ -3817,6 +3931,16 @@ function PaymentsPage({ currentUser }) {
       return;
     }
 
+    const customerName =
+      customers.find((c) => c.id === form.customerId)?.name || "customer";
+
+    await notifyActiveProfiles({
+      type: "payment",
+      title: "Payment recorded",
+      message: `${formatMoney(form.amount)} received from ${customerName}`,
+      roles: ["owner"],
+    });
+
     setShowAdd(false);
     await loadPayments();
   };
@@ -4256,6 +4380,13 @@ function ExpensesPage({ currentUser }) {
       setError(insertError.message);
       return;
     }
+
+    await notifyActiveProfiles({
+      type: "expense",
+      title: "Expense recorded",
+      message: `${form.category}: ${formatMoney(form.amount)} — ${form.description.trim()}`,
+      roles: ["owner"],
+    });
 
     setShowAdd(false);
     await loadExpenses();
@@ -4727,6 +4858,18 @@ function TractorsPage({ currentUser }) {
       return;
     }
 
+    if (status === "Maintenance" || status === "Inactive") {
+      await notifyActiveProfiles({
+        type: "tractor",
+        title:
+          status === "Maintenance"
+            ? "Tractor marked for maintenance"
+            : "Tractor deactivated",
+        message: `${tractor.name} is now ${status}`,
+        roles: ["owner", "staff"],
+      });
+    }
+
     setSelectedTractor(null);
     await loadTractors();
   };
@@ -5190,6 +5333,725 @@ function ViewTractorModal({
 }
 
 
+/* =========================================
+   STAFF
+========================================= */
+
+function StaffPage({ currentUser }) {
+  const [profiles, setProfiles] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [showAddStaff, setShowAddStaff] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [successMessage, setSuccessMessage] = useState("");
+
+  const isAdmin = currentUser?.role === "owner";
+
+  const loadProfiles = async () => {
+    setLoading(true);
+    setError("");
+
+    const { data, error: queryError } = await supabase
+      .from("profiles")
+      .select("id, full_name, role, active, created_at")
+      .order("full_name", { ascending: true });
+
+    if (queryError) {
+      console.error("Error loading staff profiles:", queryError);
+      setError(queryError.message);
+      setLoading(false);
+      return;
+    }
+
+    setProfiles(data || []);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    loadProfiles();
+
+    const channel = supabase
+      .channel("staff-profiles")
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "profiles",
+        },
+        () => {
+          loadProfiles();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  const activeProfiles = profiles.filter((p) => p.active);
+  const inactiveProfiles = profiles.filter((p) => !p.active);
+  const adminCount = profiles.filter((p) => p.role === "owner").length;
+  const staffCount = profiles.filter((p) => p.role === "staff").length;
+
+  const createStaff = async (form) => {
+    if (!isAdmin) {
+      setError("Only administrators can create staff accounts.");
+      return;
+    }
+
+    setCreating(true);
+    setError("");
+    setSuccessMessage("");
+
+    try {
+      const { data, error: fnError } = await supabase.functions.invoke(
+        "create-staff",
+        {
+          body: {
+            full_name: form.fullName.trim(),
+            email: form.email.trim().toLowerCase(),
+            password: form.password,
+          },
+        }
+      );
+
+      if (fnError) {
+        console.error("create-staff function error:", fnError);
+        setError(
+          fnError.message ||
+            "Unable to create staff account. Check the create-staff Edge Function is deployed."
+        );
+        return;
+      }
+
+      if (data?.error) {
+        setError(data.error);
+        return;
+      }
+
+      setShowAddStaff(false);
+      setSuccessMessage(
+        data?.message ||
+          `Staff account created for ${form.fullName.trim()}. They can log in with their email.`
+      );
+      await loadProfiles();
+    } catch (err) {
+      console.error("Unexpected create-staff error:", err);
+      setError(err?.message || "Unable to create staff account.");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  return (
+    <div>
+      <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="text-sm font-medium text-slate-500">
+            Team management
+          </p>
+
+          <h1 className="mt-1 text-2xl font-bold tracking-tight sm:text-3xl">
+            Staff
+          </h1>
+
+          <p className="mt-2 text-slate-500">
+            Administrators create login accounts for staff. New accounts always
+            receive role staff — never owner.
+          </p>
+        </div>
+
+        {isAdmin ? (
+          <button
+            type="button"
+            onClick={() => {
+              setSuccessMessage("");
+              setError("");
+              setShowAddStaff(true);
+            }}
+            className="flex items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-800"
+          >
+            <UserPlus size={18} />
+            Add Staff
+          </button>
+        ) : null}
+      </div>
+
+      {error && <DatabaseError message={error} />}
+
+      {successMessage ? (
+        <div className="mb-6 rounded-xl border border-emerald-100 bg-emerald-50 p-4 text-sm text-emerald-800">
+          {successMessage}
+        </div>
+      ) : null}
+
+      {!isAdmin ? (
+        <div className="mb-6 rounded-xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-800">
+          You can view the team list. Only administrators can create staff
+          login accounts.
+        </div>
+      ) : null}
+
+      <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <MiniStat
+          title="Total profiles"
+          value={loading ? "…" : profiles.length}
+        />
+        <MiniStat
+          title="Active"
+          value={loading ? "…" : activeProfiles.length}
+        />
+        <MiniStat
+          title="Staff"
+          value={loading ? "…" : staffCount}
+        />
+        <MiniStat
+          title="Administrators"
+          value={loading ? "…" : adminCount}
+        />
+      </div>
+
+      <section className="mb-6 rounded-2xl border border-slate-200 bg-white">
+        <div className="border-b border-slate-100 p-5">
+          <h2 className="font-semibold">Active staff</h2>
+          <p className="mt-1 text-sm text-slate-500">
+            {loading
+              ? "Loading profiles..."
+              : `${activeProfiles.length} active profile${
+                  activeProfiles.length === 1 ? "" : "s"
+                }`}
+          </p>
+        </div>
+
+        <div className="grid gap-3 p-5 sm:grid-cols-2 lg:grid-cols-3">
+          {loading ? (
+            <div className="col-span-full py-8 text-center text-sm text-slate-500">
+              Loading staff...
+            </div>
+          ) : activeProfiles.length > 0 ? (
+            activeProfiles.map((person) => (
+              <div
+                key={person.id}
+                className="flex items-center gap-3 rounded-xl border border-slate-100 p-4"
+              >
+                <div className="flex h-11 w-11 items-center justify-center rounded-full bg-slate-100 text-sm font-bold">
+                  {getInitials(person.full_name)}
+                </div>
+
+                <div className="min-w-0 flex-1">
+                  <p className="truncate font-medium">
+                    {person.full_name}
+                  </p>
+                  <p className="text-xs capitalize text-slate-500">
+                    {person.role === "owner" ? "Administrator" : "Staff"}
+                  </p>
+                </div>
+
+                <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-emerald-500" />
+              </div>
+            ))
+          ) : (
+            <div className="col-span-full rounded-xl bg-slate-50 p-6 text-center">
+              <Users size={28} className="mx-auto text-slate-300" />
+              <p className="mt-3 font-medium">No active staff</p>
+              <p className="mt-1 text-sm text-slate-500">
+                Use Add Staff to create login accounts for your team.
+              </p>
+            </div>
+          )}
+        </div>
+      </section>
+
+      {inactiveProfiles.length > 0 && (
+        <section className="rounded-2xl border border-slate-200 bg-white">
+          <div className="border-b border-slate-100 p-5">
+            <h2 className="font-semibold">Inactive profiles</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              {inactiveProfiles.length} inactive profile
+              {inactiveProfiles.length === 1 ? "" : "s"}
+            </p>
+          </div>
+
+          <div className="grid gap-3 p-5 sm:grid-cols-2 lg:grid-cols-3">
+            {inactiveProfiles.map((person) => (
+              <div
+                key={person.id}
+                className="flex items-center gap-3 rounded-xl border border-slate-100 bg-slate-50 p-4 opacity-70"
+              >
+                <div className="flex h-11 w-11 items-center justify-center rounded-full bg-slate-200 text-sm font-bold text-slate-500">
+                  {getInitials(person.full_name)}
+                </div>
+
+                <div className="min-w-0 flex-1">
+                  <p className="truncate font-medium text-slate-600">
+                    {person.full_name}
+                  </p>
+                  <p className="text-xs capitalize text-slate-400">
+                    {person.role === "owner" ? "Administrator" : "Staff"}
+                  </p>
+                </div>
+
+                <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-slate-300" />
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {showAddStaff && (
+        <AddStaffModal
+          creating={creating}
+          onClose={() => setShowAddStaff(false)}
+          onSave={createStaff}
+        />
+      )}
+    </div>
+  );
+}
+
+
+function AddStaffModal({ onClose, onSave, creating = false }) {
+  const [form, setForm] = useState({
+    fullName: "",
+    email: "",
+    password: "",
+  });
+  const [formError, setFormError] = useState("");
+
+  const updateField = (field, value) => {
+    setForm((current) => ({ ...current, [field]: value }));
+  };
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    setFormError("");
+
+    if (!form.fullName.trim()) {
+      setFormError("Please enter the staff member's full name.");
+      return;
+    }
+
+    if (!form.email.trim()) {
+      setFormError("Please enter an email address.");
+      return;
+    }
+
+    if (!form.email.includes("@")) {
+      setFormError("Please enter a valid email address.");
+      return;
+    }
+
+    if (!form.password || form.password.length < 8) {
+      setFormError("Temporary password must be at least 8 characters.");
+      return;
+    }
+
+    try {
+      await onSave(form);
+    } catch (err) {
+      setFormError(err?.message || "Unable to create staff account.");
+    }
+  };
+
+  return (
+    <Modal title="Add Staff" onClose={onClose}>
+      <form onSubmit={handleSubmit} className="space-y-5">
+        {formError ? (
+          <div className="rounded-xl bg-red-50 p-3 text-sm text-red-700">
+            {formError}
+          </div>
+        ) : null}
+
+        <p className="text-sm text-slate-500">
+          Creates a Supabase Auth login and a profiles row with{" "}
+          <span className="font-semibold text-slate-700">role = staff</span>.
+          No role selector — administrators stay limited to existing owners.
+        </p>
+
+        <FormInput
+          label="Full name"
+          value={form.fullName}
+          placeholder="e.g. Oscar Otieno"
+          icon={<UserPlus size={17} />}
+          onChange={(value) => updateField("fullName", value)}
+        />
+
+        <FormInput
+          label="Email"
+          type="text"
+          value={form.email}
+          placeholder="e.g. oscar@example.com"
+          onChange={(value) => updateField("email", value)}
+        />
+
+        <FormInput
+          label="Temporary password"
+          type="password"
+          value={form.password}
+          placeholder="Min. 8 characters"
+          onChange={(value) => updateField("password", value)}
+        />
+
+        <p className="text-xs text-slate-500">
+          Share the email and temporary password securely. Staff should change
+          their password after first login.
+        </p>
+
+        <div className="flex flex-col-reverse gap-3 border-t border-slate-100 pt-5 sm:flex-row sm:justify-end">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={creating}
+            className="rounded-xl border border-slate-200 px-5 py-3 text-sm font-semibold hover:bg-slate-50 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={creating}
+            className="flex items-center justify-center gap-2 rounded-xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
+          >
+            <Save size={17} />
+            {creating ? "Creating..." : "Create Staff"}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+
+/* =========================================
+   NOTIFICATION BELL
+========================================= */
+
+function NotificationBell({ userId, enabled = true }) {
+  const [open, setOpen] = useState(false);
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const menuRef = useRef(null);
+
+  const unreadCount = items.filter((n) => !n.read).length;
+
+  const loadNotifications = async () => {
+    if (!userId) return;
+    setLoading(true);
+
+    const { data, error } = await supabase
+      .from("notifications")
+      .select("id, type, title, message, read, created_at")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false })
+      .limit(20);
+
+    if (error) {
+      console.error("Notifications load error:", error);
+      setLoading(false);
+      return;
+    }
+
+    setItems(data || []);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    loadNotifications();
+  }, [userId]);
+
+  useEffect(() => {
+    if (!userId || !enabled) return undefined;
+
+    const channel = supabase
+      .channel(`notifications-${userId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "notifications",
+          filter: `user_id=eq.${userId}`,
+        },
+        () => {
+          loadNotifications();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [userId, enabled]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+
+    function handlePointerDown(event) {
+      if (menuRef.current && !menuRef.current.contains(event.target)) {
+        setOpen(false);
+      }
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [open]);
+
+  const markAsRead = async (id) => {
+    const { error } = await supabase
+      .from("notifications")
+      .update({ read: true })
+      .eq("id", id);
+
+    if (error) {
+      console.error("Mark read error:", error);
+      return;
+    }
+
+    setItems((current) =>
+      current.map((n) => (n.id === id ? { ...n, read: true } : n))
+    );
+  };
+
+  const markAllRead = async () => {
+    const unreadIds = items.filter((n) => !n.read).map((n) => n.id);
+    if (!unreadIds.length) return;
+
+    const { error } = await supabase
+      .from("notifications")
+      .update({ read: true })
+      .in("id", unreadIds);
+
+    if (error) {
+      console.error("Mark all read error:", error);
+      return;
+    }
+
+    setItems((current) => current.map((n) => ({ ...n, read: true })));
+  };
+
+  const timeAgo = (value) => {
+    if (!value) return "";
+    const diff = Date.now() - new Date(value).getTime();
+    const minutes = Math.floor(diff / 60000);
+    if (minutes < 1) return "Just now";
+    if (minutes < 60) return `${minutes} min ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    return `${days}d ago`;
+  };
+
+  return (
+    <div className="relative" ref={menuRef}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="relative rounded-full p-2 hover:bg-slate-100 dark:hover:bg-slate-800"
+        title="Notifications"
+      >
+        <Bell size={21} />
+        {unreadCount > 0 ? (
+          <span className="absolute -right-0.5 -top-0.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white">
+            {unreadCount > 9 ? "9+" : unreadCount}
+          </span>
+        ) : null}
+      </button>
+
+      {open ? (
+        <div className="absolute right-0 top-full z-[70] mt-2 w-80 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900 sm:w-96">
+          <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3 dark:border-slate-800">
+            <div>
+              <p className="text-sm font-semibold">Notifications</p>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                {unreadCount} unread
+              </p>
+            </div>
+            {unreadCount > 0 ? (
+              <button
+                type="button"
+                onClick={markAllRead}
+                className="text-xs font-semibold text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white"
+              >
+                Mark all read
+              </button>
+            ) : null}
+          </div>
+
+          <div className="max-h-80 overflow-y-auto">
+            {loading ? (
+              <p className="px-4 py-8 text-center text-sm text-slate-500">
+                Loading...
+              </p>
+            ) : items.length > 0 ? (
+              items.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => {
+                    if (!item.read) markAsRead(item.id);
+                  }}
+                  className={`flex w-full flex-col gap-1 border-b border-slate-50 px-4 py-3 text-left transition hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/60 ${
+                    item.read ? "opacity-70" : ""
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                      {item.title}
+                    </p>
+                    {!item.read ? (
+                      <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-emerald-500" />
+                    ) : null}
+                  </div>
+                  <p className="text-xs text-slate-600 dark:text-slate-400">
+                    {item.message}
+                  </p>
+                  <p className="text-[11px] text-slate-400">
+                    {timeAgo(item.created_at)}
+                  </p>
+                </button>
+              ))
+            ) : (
+              <p className="px-4 py-8 text-center text-sm text-slate-500">
+                No notifications yet.
+              </p>
+            )}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+
+/* =========================================
+   SETTINGS
+========================================= */
+
+function SettingsPage({
+  currentUser,
+  notificationPrefs,
+  onNotificationPrefsChange,
+}) {
+  const togglePref = (key) => {
+    onNotificationPrefsChange({
+      ...notificationPrefs,
+      [key]: !notificationPrefs[key],
+    });
+  };
+
+  const notifOptions = [
+    {
+      key: "newRequests",
+      label: "New customer requests",
+      description: "When a new service request is created",
+    },
+    {
+      key: "statusChanges",
+      label: "Request status changes",
+      description: "When a job moves between Pending, In Progress, Completed",
+    },
+    {
+      key: "payments",
+      label: "Payment recorded",
+      description: "When a customer payment is entered",
+    },
+    {
+      key: "expenses",
+      label: "Expense recorded",
+      description: "When a business expense is entered",
+    },
+    {
+      key: "tractorMaintenance",
+      label: "Tractor maintenance",
+      description: "When a tractor is marked Maintenance or Inactive",
+    },
+  ];
+
+  return (
+    <div className="mx-auto max-w-3xl">
+      <div className="mb-8">
+        <p className="text-sm font-medium text-slate-500">
+          System
+        </p>
+        <h1 className="mt-1 text-2xl font-bold tracking-tight sm:text-3xl">
+          Settings
+        </h1>
+        <p className="mt-2 text-slate-500">
+          Notification preferences for{" "}
+          {currentUser?.full_name || "your account"}.
+        </p>
+      </div>
+
+      {/* Notifications */}
+      <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 transition-colors dark:border-slate-800 dark:bg-slate-900">
+        <h2 className="font-semibold">Notifications</h2>
+        <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+          Choose which events you care about. Delivery uses the Supabase
+          notifications table and the header bell.
+        </p>
+
+        <div className="mt-5 space-y-3">
+          {notifOptions.map((option) => (
+            <label
+              key={option.key}
+              className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-100 p-3 transition hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50"
+            >
+              <input
+                type="checkbox"
+                checked={Boolean(notificationPrefs[option.key])}
+                onChange={() => togglePref(option.key)}
+                className="mt-1 h-4 w-4 rounded border-slate-300"
+              />
+              <span>
+                <span className="block text-sm font-semibold">
+                  {option.label}
+                </span>
+                <span className="mt-0.5 block text-xs text-slate-500 dark:text-slate-400">
+                  {option.description}
+                </span>
+              </span>
+            </label>
+          ))}
+        </div>
+      </section>
+
+      {/* Behaviour */}
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 transition-colors dark:border-slate-800 dark:bg-slate-900">
+        <h2 className="font-semibold">Notification behaviour</h2>
+        <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+          Real-time updates push new items to the bell without refreshing the
+          page.
+        </p>
+
+        <label className="mt-5 flex cursor-pointer items-start gap-3 rounded-xl border border-slate-100 p-3 transition hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50">
+          <input
+            type="checkbox"
+            checked={Boolean(notificationPrefs.realtime)}
+            onChange={() => togglePref("realtime")}
+            className="mt-1 h-4 w-4 rounded border-slate-300"
+          />
+          <span>
+            <span className="block text-sm font-semibold">
+              Real-time notifications
+            </span>
+            <span className="mt-0.5 block text-xs text-slate-500 dark:text-slate-400">
+              Subscribe to live notification changes over Supabase channels
+            </span>
+          </span>
+        </label>
+
+        <p className="mt-4 text-xs text-slate-500 dark:text-slate-400">
+          Staff accounts are managed on the Staff page. Settings here only
+          affect appearance and notification preferences for this browser.
+        </p>
+      </section>
+    </div>
+  );
+}
+
+
+
 
 /* =========================================
    REPORTS (read-only analytics)
@@ -5207,14 +6069,6 @@ function endOfDay(date) {
   return d;
 }
 
-function toDateInputValue(date) {
-  const d = new Date(date);
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
 function getDateRangePreset(preset) {
   const now = new Date();
   const todayStart = startOfDay(now);
@@ -5225,7 +6079,7 @@ function getDateRangePreset(preset) {
   }
 
   if (preset === "this_week") {
-    const day = now.getDay(); // 0 Sun
+    const day = now.getDay();
     const diffToMonday = day === 0 ? 6 : day - 1;
     const from = startOfDay(new Date(now));
     from.setDate(from.getDate() - diffToMonday);
@@ -5250,7 +6104,6 @@ function getDateRangePreset(preset) {
     return { from, to: todayEnd };
   }
 
-  // all / custom handled separately
   return { from: null, to: null };
 }
 
@@ -5321,12 +6174,8 @@ function ReportsPage({ currentUser }) {
           service,
           customer:customers ( id, name )
         `),
-      supabase
-        .from("tractors")
-        .select("id, name, status"),
-      supabase
-        .from("customers")
-        .select("id, name, created_at"),
+      supabase.from("tractors").select("id, name, status"),
+      supabase.from("customers").select("id, name, created_at"),
     ]);
 
     if (paymentsResult.error) {
@@ -5413,7 +6262,6 @@ function ReportsPage({ currentUser }) {
       .length,
   };
 
-  // Tractor utilization is a current fleet snapshot (not date-filtered)
   const tractorCounts = {
     available: tractors.filter((t) => t.status === "Available").length,
     working: tractors.filter((t) => t.status === "Working").length,
@@ -5421,16 +6269,16 @@ function ReportsPage({ currentUser }) {
     inactive: tractors.filter((t) => t.status === "Inactive").length,
   };
 
-  // Expense breakdown by category
-  const expenseByCategory = expenseCategories.map((category) => {
-    const total = filteredExpenses
-      .filter((e) => e.category === category)
-      .reduce((sum, e) => sum + Number(e.amount || 0), 0);
-    return { category, total };
-  }).filter((row) => row.total > 0)
+  const expenseByCategory = expenseCategories
+    .map((category) => {
+      const total = filteredExpenses
+        .filter((e) => e.category === category)
+        .reduce((sum, e) => sum + Number(e.amount || 0), 0);
+      return { category, total };
+    })
+    .filter((row) => row.total > 0)
     .sort((a, b) => b.total - a.total);
 
-  // Customer activity: requests + revenue in range
   const customerStats = customers
     .map((customer) => {
       const customerRequests = filteredRequests.filter(
@@ -5479,15 +6327,14 @@ function ReportsPage({ currentUser }) {
     <div>
       <div className="mb-8 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <p className="text-sm font-medium text-slate-500">
-            Analytics
-          </p>
+          <p className="text-sm font-medium text-slate-500">Analytics</p>
           <h1 className="mt-1 text-2xl font-bold tracking-tight sm:text-3xl">
             Reports
           </h1>
           <p className="mt-2 text-slate-500">
             Read-only view of operations and financials from your live data.
-            Period: <span className="font-medium text-slate-700">{periodLabel}</span>
+            Period:{" "}
+            <span className="font-medium text-slate-700">{periodLabel}</span>
           </p>
         </div>
 
@@ -5550,7 +6397,6 @@ function ReportsPage({ currentUser }) {
 
       {error && <DatabaseError message={error} />}
 
-      {/* 1. Financial summary */}
       <div className="mb-6 grid gap-4 sm:grid-cols-3">
         <StatCard
           title="Revenue"
@@ -5572,7 +6418,6 @@ function ReportsPage({ currentUser }) {
         />
       </div>
 
-      {/* 2. Request summary */}
       <section className="mb-6 rounded-2xl border border-slate-200 bg-white">
         <div className="border-b border-slate-100 p-5">
           <h2 className="font-semibold">Request summary</h2>
@@ -5582,7 +6427,10 @@ function ReportsPage({ currentUser }) {
         </div>
         <div className="grid gap-3 p-5 sm:grid-cols-2 lg:grid-cols-5">
           <MiniStat title="Total" value={loading ? "…" : requestCounts.total} />
-          <MiniStat title="Pending" value={loading ? "…" : requestCounts.pending} />
+          <MiniStat
+            title="Pending"
+            value={loading ? "…" : requestCounts.pending}
+          />
           <MiniStat
             title="In Progress"
             value={loading ? "…" : requestCounts.inProgress}
@@ -5598,7 +6446,6 @@ function ReportsPage({ currentUser }) {
         </div>
       </section>
 
-      {/* 3. Tractor utilization (current snapshot) */}
       <section className="mb-6 rounded-2xl border border-slate-200 bg-white">
         <div className="border-b border-slate-100 p-5">
           <h2 className="font-semibold">Tractor utilization</h2>
@@ -5627,12 +6474,12 @@ function ReportsPage({ currentUser }) {
       </section>
 
       <div className="mb-6 grid gap-6 xl:grid-cols-2">
-        {/* 4. Customer activity */}
         <section className="rounded-2xl border border-slate-200 bg-white">
           <div className="border-b border-slate-100 p-5">
             <h2 className="font-semibold">Customer activity</h2>
             <p className="mt-1 text-sm text-slate-500">
-              Top customers by revenue in period · {customers.length} total customers
+              Top customers by revenue in period · {customers.length} total
+              customers
             </p>
           </div>
 
@@ -5682,7 +6529,6 @@ function ReportsPage({ currentUser }) {
           </div>
         </section>
 
-        {/* 5. Expense breakdown */}
         <section className="rounded-2xl border border-slate-200 bg-white">
           <div className="border-b border-slate-100 p-5">
             <h2 className="font-semibold">Expense breakdown</h2>
@@ -5741,176 +6587,6 @@ function ReportsPage({ currentUser }) {
 
 
 /* =========================================
-   STAFF
-========================================= */
-
-function StaffPage() {
-  const [profiles, setProfiles] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-
-  const loadProfiles = async () => {
-    setLoading(true);
-    setError("");
-
-    const { data, error: queryError } = await supabase
-      .from("profiles")
-      .select("id, full_name, role, active, created_at")
-      .order("full_name", { ascending: true });
-
-    if (queryError) {
-      console.error("Error loading staff profiles:", queryError);
-      setError(queryError.message);
-      setLoading(false);
-      return;
-    }
-
-    setProfiles(data || []);
-    setLoading(false);
-  };
-
-  useEffect(() => {
-    loadProfiles();
-
-    const channel = supabase
-      .channel("staff-profiles")
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "profiles",
-        },
-        () => {
-          loadProfiles();
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, []);
-
-  const activeProfiles = profiles.filter((p) => p.active);
-  const inactiveProfiles = profiles.filter((p) => !p.active);
-  const adminCount = profiles.filter((p) => p.role === "owner").length;
-
-  return (
-    <div>
-      <div className="mb-8">
-        <p className="text-sm font-medium text-slate-500">
-          Team management
-        </p>
-
-        <h1 className="mt-1 text-2xl font-bold tracking-tight sm:text-3xl">
-          Staff
-        </h1>
-
-        <p className="mt-2 text-slate-500">
-          Profiles stored in Supabase. Staff accounts are managed through
-          authentication, not hard-coded names.
-        </p>
-      </div>
-
-      {error && <DatabaseError message={error} />}
-
-      <div className="mb-6 grid gap-4 sm:grid-cols-3">
-        <MiniStat title="Total profiles" value={loading ? "…" : profiles.length} />
-        <MiniStat title="Active staff" value={loading ? "…" : activeProfiles.length} />
-        <MiniStat title="Administrators" value={loading ? "…" : adminCount} />
-      </div>
-
-      <section className="mb-6 rounded-2xl border border-slate-200 bg-white">
-        <div className="border-b border-slate-100 p-5">
-          <h2 className="font-semibold">Active staff</h2>
-          <p className="mt-1 text-sm text-slate-500">
-            {loading
-              ? "Loading profiles..."
-              : `${activeProfiles.length} active profile${activeProfiles.length === 1 ? "" : "s"}`}
-          </p>
-        </div>
-
-        <div className="grid gap-3 p-5 sm:grid-cols-2 lg:grid-cols-3">
-          {loading ? (
-            <div className="col-span-full py-8 text-center text-sm text-slate-500">
-              Loading staff...
-            </div>
-          ) : activeProfiles.length > 0 ? (
-            activeProfiles.map((person) => (
-              <div
-                key={person.id}
-                className="flex items-center gap-3 rounded-xl border border-slate-100 p-4"
-              >
-                <div className="flex h-11 w-11 items-center justify-center rounded-full bg-slate-100 text-sm font-bold">
-                  {getInitials(person.full_name)}
-                </div>
-
-                <div className="min-w-0 flex-1">
-                  <p className="truncate font-medium">
-                    {person.full_name}
-                  </p>
-                  <p className="text-xs capitalize text-slate-500">
-                    {person.role === "owner" ? "Administrator" : "Staff"}
-                  </p>
-                </div>
-
-                <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-emerald-500" />
-              </div>
-            ))
-          ) : (
-            <div className="col-span-full rounded-xl bg-slate-50 p-6 text-center">
-              <Users size={28} className="mx-auto text-slate-300" />
-              <p className="mt-3 font-medium">No active staff</p>
-              <p className="mt-1 text-sm text-slate-500">
-                Active profiles from public.profiles will appear here.
-              </p>
-            </div>
-          )}
-        </div>
-      </section>
-
-      {inactiveProfiles.length > 0 && (
-        <section className="rounded-2xl border border-slate-200 bg-white">
-          <div className="border-b border-slate-100 p-5">
-            <h2 className="font-semibold">Inactive profiles</h2>
-            <p className="mt-1 text-sm text-slate-500">
-              {inactiveProfiles.length} inactive profile
-              {inactiveProfiles.length === 1 ? "" : "s"}
-            </p>
-          </div>
-
-          <div className="grid gap-3 p-5 sm:grid-cols-2 lg:grid-cols-3">
-            {inactiveProfiles.map((person) => (
-              <div
-                key={person.id}
-                className="flex items-center gap-3 rounded-xl border border-slate-100 bg-slate-50 p-4 opacity-70"
-              >
-                <div className="flex h-11 w-11 items-center justify-center rounded-full bg-slate-200 text-sm font-bold text-slate-500">
-                  {getInitials(person.full_name)}
-                </div>
-
-                <div className="min-w-0 flex-1">
-                  <p className="truncate font-medium text-slate-600">
-                    {person.full_name}
-                  </p>
-                  <p className="text-xs capitalize text-slate-400">
-                    {person.role === "owner" ? "Administrator" : "Staff"}
-                  </p>
-                </div>
-
-                <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-slate-300" />
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
-    </div>
-  );
-}
-
-
-/* =========================================
    NAVIGATION
 ========================================= */
 
@@ -5920,7 +6596,6 @@ function NavItem({
   active = false,
   onClick,
 }) {
-
   return (
     <button
       onClick={onClick}
@@ -5930,11 +6605,8 @@ function NavItem({
           : "text-slate-300 hover:bg-white/10 hover:text-white"
       }`}
     >
-
       <Icon size={19} />
-
       {label}
-
     </button>
   );
 }

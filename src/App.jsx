@@ -724,13 +724,18 @@ function App() {
             <ExpensesPage currentUser={profile} />
           )}
 
+          {currentPage === "Reports" && (
+            <ReportsPage currentUser={profile} />
+          )}
+
           {currentPage !== "Dashboard" &&
             currentPage !== "Customers" &&
             currentPage !== "Requests" &&
             currentPage !== "Staff" &&
             currentPage !== "Tractors" &&
             currentPage !== "Payments" &&
-            currentPage !== "Expenses" && (
+            currentPage !== "Expenses" &&
+            currentPage !== "Reports" && (
               <ComingSoonPage page={currentPage} />
             )}
 
@@ -5181,6 +5186,556 @@ function ViewTractorModal({
         </div>
       </div>
     </Modal>
+  );
+}
+
+
+
+/* =========================================
+   REPORTS (read-only analytics)
+========================================= */
+
+function startOfDay(date) {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function endOfDay(date) {
+  const d = new Date(date);
+  d.setHours(23, 59, 59, 999);
+  return d;
+}
+
+function toDateInputValue(date) {
+  const d = new Date(date);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getDateRangePreset(preset) {
+  const now = new Date();
+  const todayStart = startOfDay(now);
+  const todayEnd = endOfDay(now);
+
+  if (preset === "today") {
+    return { from: todayStart, to: todayEnd };
+  }
+
+  if (preset === "this_week") {
+    const day = now.getDay(); // 0 Sun
+    const diffToMonday = day === 0 ? 6 : day - 1;
+    const from = startOfDay(new Date(now));
+    from.setDate(from.getDate() - diffToMonday);
+    return { from, to: todayEnd };
+  }
+
+  if (preset === "this_month") {
+    const from = startOfDay(new Date(now.getFullYear(), now.getMonth(), 1));
+    return { from, to: todayEnd };
+  }
+
+  if (preset === "last_month") {
+    const from = startOfDay(
+      new Date(now.getFullYear(), now.getMonth() - 1, 1)
+    );
+    const to = endOfDay(new Date(now.getFullYear(), now.getMonth(), 0));
+    return { from, to };
+  }
+
+  if (preset === "this_year") {
+    const from = startOfDay(new Date(now.getFullYear(), 0, 1));
+    return { from, to: todayEnd };
+  }
+
+  // all / custom handled separately
+  return { from: null, to: null };
+}
+
+function isDateInRange(value, from, to) {
+  if (!value) return false;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return false;
+  if (from && date < from) return false;
+  if (to && date > to) return false;
+  return true;
+}
+
+function ReportsPage({ currentUser }) {
+  const [preset, setPreset] = useState("this_month");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+
+  const [payments, setPayments] = useState([]);
+  const [expenses, setExpenses] = useState([]);
+  const [requests, setRequests] = useState([]);
+  const [tractors, setTractors] = useState([]);
+  const [customers, setCustomers] = useState([]);
+
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const loadReports = async () => {
+    setLoading(true);
+    setError("");
+
+    const [
+      paymentsResult,
+      expensesResult,
+      requestsResult,
+      tractorsResult,
+      customersResult,
+    ] = await Promise.all([
+      supabase
+        .from("payments")
+        .select(`
+          id,
+          amount,
+          payment_date,
+          customer_id,
+          request_id,
+          payment_method,
+          customer:customers ( id, name )
+        `),
+      supabase
+        .from("expenses")
+        .select(`
+          id,
+          amount,
+          expense_date,
+          category,
+          tractor_id,
+          request_id
+        `),
+      supabase
+        .from("requests")
+        .select(`
+          id,
+          status,
+          created_at,
+          requested_date,
+          customer_id,
+          tractor_id,
+          service,
+          customer:customers ( id, name )
+        `),
+      supabase
+        .from("tractors")
+        .select("id, name, status"),
+      supabase
+        .from("customers")
+        .select("id, name, created_at"),
+    ]);
+
+    if (paymentsResult.error) {
+      setError(paymentsResult.error.message);
+      setLoading(false);
+      return;
+    }
+    if (expensesResult.error) {
+      setError(expensesResult.error.message);
+      setLoading(false);
+      return;
+    }
+    if (requestsResult.error) {
+      setError(requestsResult.error.message);
+      setLoading(false);
+      return;
+    }
+    if (tractorsResult.error) {
+      setError(tractorsResult.error.message);
+      setLoading(false);
+      return;
+    }
+    if (customersResult.error) {
+      setError(customersResult.error.message);
+      setLoading(false);
+      return;
+    }
+
+    setPayments(paymentsResult.data || []);
+    setExpenses(expensesResult.data || []);
+    setRequests(requestsResult.data || []);
+    setTractors(tractorsResult.data || []);
+    setCustomers(customersResult.data || []);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    loadReports();
+  }, []);
+
+  let rangeFrom = null;
+  let rangeTo = null;
+
+  if (preset === "custom") {
+    rangeFrom = customFrom ? startOfDay(customFrom) : null;
+    rangeTo = customTo ? endOfDay(customTo) : null;
+  } else if (preset === "all") {
+    rangeFrom = null;
+    rangeTo = null;
+  } else {
+    const range = getDateRangePreset(preset);
+    rangeFrom = range.from;
+    rangeTo = range.to;
+  }
+
+  const filteredPayments = payments.filter((p) =>
+    isDateInRange(p.payment_date, rangeFrom, rangeTo)
+  );
+  const filteredExpenses = expenses.filter((e) =>
+    isDateInRange(e.expense_date, rangeFrom, rangeTo)
+  );
+  const filteredRequests = requests.filter((r) =>
+    isDateInRange(r.requested_date || r.created_at, rangeFrom, rangeTo)
+  );
+
+  const revenue = filteredPayments.reduce(
+    (sum, p) => sum + Number(p.amount || 0),
+    0
+  );
+  const expenseTotal = filteredExpenses.reduce(
+    (sum, e) => sum + Number(e.amount || 0),
+    0
+  );
+  const net = revenue - expenseTotal;
+
+  const requestCounts = {
+    total: filteredRequests.length,
+    pending: filteredRequests.filter((r) => r.status === "Pending").length,
+    inProgress: filteredRequests.filter((r) => r.status === "In Progress")
+      .length,
+    completed: filteredRequests.filter((r) => r.status === "Completed")
+      .length,
+    cancelled: filteredRequests.filter((r) => r.status === "Cancelled")
+      .length,
+  };
+
+  // Tractor utilization is a current fleet snapshot (not date-filtered)
+  const tractorCounts = {
+    available: tractors.filter((t) => t.status === "Available").length,
+    working: tractors.filter((t) => t.status === "Working").length,
+    maintenance: tractors.filter((t) => t.status === "Maintenance").length,
+    inactive: tractors.filter((t) => t.status === "Inactive").length,
+  };
+
+  // Expense breakdown by category
+  const expenseByCategory = expenseCategories.map((category) => {
+    const total = filteredExpenses
+      .filter((e) => e.category === category)
+      .reduce((sum, e) => sum + Number(e.amount || 0), 0);
+    return { category, total };
+  }).filter((row) => row.total > 0)
+    .sort((a, b) => b.total - a.total);
+
+  // Customer activity: requests + revenue in range
+  const customerStats = customers
+    .map((customer) => {
+      const customerRequests = filteredRequests.filter(
+        (r) => r.customer_id === customer.id
+      );
+      const customerRevenue = filteredPayments
+        .filter((p) => p.customer_id === customer.id)
+        .reduce((sum, p) => sum + Number(p.amount || 0), 0);
+
+      return {
+        id: customer.id,
+        name: customer.name,
+        requests: customerRequests.length,
+        revenue: customerRevenue,
+      };
+    })
+    .filter((row) => row.requests > 0 || row.revenue > 0)
+    .sort((a, b) => b.revenue - a.revenue || b.requests - a.requests)
+    .slice(0, 10);
+
+  const periodLabel = (() => {
+    switch (preset) {
+      case "today":
+        return "Today";
+      case "this_week":
+        return "This week";
+      case "this_month":
+        return "This month";
+      case "last_month":
+        return "Last month";
+      case "this_year":
+        return "This year";
+      case "all":
+        return "All time";
+      case "custom":
+        if (customFrom && customTo) return `${customFrom} → ${customTo}`;
+        if (customFrom) return `From ${customFrom}`;
+        if (customTo) return `Until ${customTo}`;
+        return "Custom range";
+      default:
+        return "Selected period";
+    }
+  })();
+
+  return (
+    <div>
+      <div className="mb-8 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <p className="text-sm font-medium text-slate-500">
+            Analytics
+          </p>
+          <h1 className="mt-1 text-2xl font-bold tracking-tight sm:text-3xl">
+            Reports
+          </h1>
+          <p className="mt-2 text-slate-500">
+            Read-only view of operations and financials from your live data.
+            Period: <span className="font-medium text-slate-700">{periodLabel}</span>
+          </p>
+        </div>
+
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+          <div>
+            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Date range
+            </label>
+            <select
+              value={preset}
+              onChange={(e) => setPreset(e.target.value)}
+              className="w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100 sm:w-44"
+            >
+              <option value="today">Today</option>
+              <option value="this_week">This week</option>
+              <option value="this_month">This month</option>
+              <option value="last_month">Last month</option>
+              <option value="this_year">This year</option>
+              <option value="all">All time</option>
+              <option value="custom">Custom range</option>
+            </select>
+          </div>
+
+          {preset === "custom" ? (
+            <>
+              <div>
+                <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  From
+                </label>
+                <input
+                  type="date"
+                  value={customFrom}
+                  onChange={(e) => setCustomFrom(e.target.value)}
+                  className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  To
+                </label>
+                <input
+                  type="date"
+                  value={customTo}
+                  onChange={(e) => setCustomTo(e.target.value)}
+                  className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
+                />
+              </div>
+            </>
+          ) : null}
+
+          <button
+            type="button"
+            onClick={loadReports}
+            className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+          >
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      {error && <DatabaseError message={error} />}
+
+      {/* 1. Financial summary */}
+      <div className="mb-6 grid gap-4 sm:grid-cols-3">
+        <StatCard
+          title="Revenue"
+          value={loading ? "…" : formatMoney(revenue)}
+          description={`Payments · ${periodLabel}`}
+          icon={<CreditCard size={21} />}
+        />
+        <StatCard
+          title="Expenses"
+          value={loading ? "…" : formatMoney(expenseTotal)}
+          description={`Costs · ${periodLabel}`}
+          icon={<Wallet size={21} />}
+        />
+        <StatCard
+          title="Net position"
+          value={loading ? "…" : formatMoney(net)}
+          description="Revenue − expenses"
+          icon={<BarChart3 size={21} />}
+        />
+      </div>
+
+      {/* 2. Request summary */}
+      <section className="mb-6 rounded-2xl border border-slate-200 bg-white">
+        <div className="border-b border-slate-100 p-5">
+          <h2 className="font-semibold">Request summary</h2>
+          <p className="mt-1 text-sm text-slate-500">
+            Jobs in the selected period (by requested date)
+          </p>
+        </div>
+        <div className="grid gap-3 p-5 sm:grid-cols-2 lg:grid-cols-5">
+          <MiniStat title="Total" value={loading ? "…" : requestCounts.total} />
+          <MiniStat title="Pending" value={loading ? "…" : requestCounts.pending} />
+          <MiniStat
+            title="In Progress"
+            value={loading ? "…" : requestCounts.inProgress}
+          />
+          <MiniStat
+            title="Completed"
+            value={loading ? "…" : requestCounts.completed}
+          />
+          <MiniStat
+            title="Cancelled"
+            value={loading ? "…" : requestCounts.cancelled}
+          />
+        </div>
+      </section>
+
+      {/* 3. Tractor utilization (current snapshot) */}
+      <section className="mb-6 rounded-2xl border border-slate-200 bg-white">
+        <div className="border-b border-slate-100 p-5">
+          <h2 className="font-semibold">Tractor utilization</h2>
+          <p className="mt-1 text-sm text-slate-500">
+            Current fleet status (live snapshot, not date-filtered)
+          </p>
+        </div>
+        <div className="grid gap-3 p-5 sm:grid-cols-2 lg:grid-cols-4">
+          <MiniStat
+            title="Available"
+            value={loading ? "…" : tractorCounts.available}
+          />
+          <MiniStat
+            title="Working"
+            value={loading ? "…" : tractorCounts.working}
+          />
+          <MiniStat
+            title="Maintenance"
+            value={loading ? "…" : tractorCounts.maintenance}
+          />
+          <MiniStat
+            title="Inactive"
+            value={loading ? "…" : tractorCounts.inactive}
+          />
+        </div>
+      </section>
+
+      <div className="mb-6 grid gap-6 xl:grid-cols-2">
+        {/* 4. Customer activity */}
+        <section className="rounded-2xl border border-slate-200 bg-white">
+          <div className="border-b border-slate-100 p-5">
+            <h2 className="font-semibold">Customer activity</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Top customers by revenue in period · {customers.length} total customers
+            </p>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[420px]">
+              <thead className="bg-slate-50">
+                <tr className="text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  <th className="px-5 py-3">Customer</th>
+                  <th className="px-5 py-3">Requests</th>
+                  <th className="px-5 py-3">Revenue</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {loading ? (
+                  <tr>
+                    <td
+                      colSpan="3"
+                      className="px-5 py-8 text-center text-sm text-slate-500"
+                    >
+                      Loading...
+                    </td>
+                  </tr>
+                ) : customerStats.length > 0 ? (
+                  customerStats.map((row) => (
+                    <tr key={row.id} className="hover:bg-slate-50">
+                      <td className="px-5 py-3 font-medium">{row.name}</td>
+                      <td className="px-5 py-3 text-sm text-slate-600">
+                        {row.requests}
+                      </td>
+                      <td className="px-5 py-3 text-sm font-semibold text-emerald-700">
+                        {formatMoney(row.revenue)}
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td
+                      colSpan="3"
+                      className="px-5 py-8 text-center text-sm text-slate-500"
+                    >
+                      No customer activity in this period.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        {/* 5. Expense breakdown */}
+        <section className="rounded-2xl border border-slate-200 bg-white">
+          <div className="border-b border-slate-100 p-5">
+            <h2 className="font-semibold">Expense breakdown</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Totals by category for {periodLabel.toLowerCase()}
+            </p>
+          </div>
+
+          <div className="space-y-3 p-5">
+            {loading ? (
+              <p className="py-6 text-center text-sm text-slate-500">
+                Loading...
+              </p>
+            ) : expenseByCategory.length > 0 ? (
+              expenseByCategory.map((row) => {
+                const pct =
+                  expenseTotal > 0
+                    ? Math.round((row.total / expenseTotal) * 100)
+                    : 0;
+                return (
+                  <div key={row.category}>
+                    <div className="mb-1 flex items-center justify-between text-sm">
+                      <span className="font-medium">{row.category}</span>
+                      <span className="text-slate-600">
+                        {formatMoney(row.total)} · {pct}%
+                      </span>
+                    </div>
+                    <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                      <div
+                        className="h-full rounded-full bg-slate-800"
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <p className="py-6 text-center text-sm text-slate-500">
+                No expenses in this period.
+              </p>
+            )}
+          </div>
+        </section>
+      </div>
+
+      <p className="text-center text-xs text-slate-400">
+        Reports only reads existing data. No financial or operational records
+        are created here.
+        {currentUser?.role === "owner"
+          ? " You are viewing as Administrator."
+          : " You are viewing as Staff."}
+      </p>
+    </div>
   );
 }
 

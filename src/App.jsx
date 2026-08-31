@@ -1513,7 +1513,7 @@ function CustomersPage({ currentUser }) {
     setError("");
 
     try {
-      // 1. Load related requests and enforce the same rule as SQL
+      // 1. Load related requests and enforce cancelled-only rule
       const {
         data: relatedRequests,
         error: requestsError,
@@ -1546,19 +1546,73 @@ function CustomersPage({ currentUser }) {
         return;
       }
 
+      // Count payments that will be removed (FK payments_customer_id_fkey)
+      const { data: relatedPayments, error: paymentsLoadError } =
+        await supabase
+          .from("payments")
+          .select("id")
+          .eq("customer_id", customer.id);
+
+      if (paymentsLoadError) {
+        console.error(
+          "Error loading customer payments:",
+          paymentsLoadError
+        );
+        setError(paymentsLoadError.message);
+        return;
+      }
+
+      const paymentCount = (relatedPayments || []).length;
+
       const confirmed = window.confirm(
-        cancelledRequests.length > 0
-          ? `Delete customer "${customer.name}"?\n\nThis will also permanently remove ${cancelledRequests.length} cancelled request(s).`
-          : `Delete customer "${customer.name}"?\n\nThis cannot be undone.`
+        [
+          `Delete customer "${customer.name}"?`,
+          "",
+          paymentCount > 0
+            ? `This will also permanently remove ${paymentCount} payment record(s).`
+            : null,
+          cancelledRequests.length > 0
+            ? `This will also permanently remove ${cancelledRequests.length} cancelled request(s).`
+            : null,
+          "This cannot be undone.",
+        ]
+          .filter(Boolean)
+          .join("\n")
       );
 
       if (!confirmed) return;
 
-      // 2. Remove cancelled requests first (app-side, matches trigger)
+      // 2. Remove payments first (required: ON DELETE RESTRICT on customer_id)
+      if (paymentCount > 0) {
+        const { error: paymentsDeleteError } = await supabase
+          .from("payments")
+          .delete()
+          .eq("customer_id", customer.id);
+
+        if (paymentsDeleteError) {
+          console.error(
+            "Error deleting customer payments:",
+            paymentsDeleteError
+          );
+          setError(
+            paymentsDeleteError.message ||
+              "Unable to delete related payments. Check RLS DELETE on payments."
+          );
+          return;
+        }
+      }
+
+      // 3. Remove cancelled requests (expenses with request_id should SET NULL if FK allows)
       if (cancelledRequests.length > 0) {
         const cancelledIds = cancelledRequests.map(
           (request) => request.id
         );
+
+        // Clear expense links first if SET NULL is not configured
+        await supabase
+          .from("expenses")
+          .update({ request_id: null })
+          .in("request_id", cancelledIds);
 
         const { error: cancelDeleteError } = await supabase
           .from("requests")
@@ -1575,7 +1629,7 @@ function CustomersPage({ currentUser }) {
         }
       }
 
-      // 3. Delete the customer; .select() detects RLS silent failures
+      // 4. Delete the customer; .select() detects RLS silent failures
       const { data: deletedRows, error: deleteError } =
         await supabase
           .from("customers")
@@ -3945,6 +3999,49 @@ function PaymentsPage({ currentUser }) {
     await loadPayments();
   };
 
+  const isAdmin = currentUser?.role === "owner";
+
+  const deletePayment = async (payment) => {
+    if (!payment?.id) return;
+
+    if (!isAdmin) {
+      setError("Only administrators can delete payments.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Delete payment of ${formatMoney(payment.amount)} from ${
+        payment.customer?.name || "this customer"
+      }?\n\nThis cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    setError("");
+
+    const { data: deletedRows, error: deleteError } = await supabase
+      .from("payments")
+      .delete()
+      .eq("id", payment.id)
+      .select("id");
+
+    if (deleteError) {
+      console.error("Error deleting payment:", deleteError);
+      setError(deleteError.message);
+      return;
+    }
+
+    if (!deletedRows || deletedRows.length === 0) {
+      setError(
+        "Payment was not deleted. Check RLS DELETE policy on public.payments for owners."
+      );
+      return;
+    }
+
+    setPayments((current) =>
+      current.filter((item) => item.id !== payment.id)
+    );
+  };
+
   return (
     <div>
       <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -4023,13 +4120,14 @@ function PaymentsPage({ currentUser }) {
                 <th className="px-5 py-4">Date</th>
                 <th className="px-5 py-4">Request</th>
                 <th className="px-5 py-4">Recorded by</th>
+                <th className="px-5 py-4">Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {loading ? (
                 <tr>
                   <td
-                    colSpan="6"
+                    colSpan="7"
                     className="px-5 py-12 text-center text-slate-500"
                   >
                     Loading payments...
@@ -4065,11 +4163,25 @@ function PaymentsPage({ currentUser }) {
                     <td className="px-5 py-4 text-sm text-slate-600">
                       {payment.creator?.full_name || "—"}
                     </td>
+                    <td className="px-5 py-4">
+                      {isAdmin ? (
+                        <button
+                          type="button"
+                          onClick={() => deletePayment(payment)}
+                          className="inline-flex items-center gap-1 text-sm font-semibold text-red-600 hover:text-red-800"
+                        >
+                          <Trash2 size={15} />
+                          Delete
+                        </button>
+                      ) : (
+                        <span className="text-xs text-slate-400">—</span>
+                      )}
+                    </td>
                   </tr>
                 ))
               ) : (
                 <tr>
-                  <td colSpan="6" className="px-5 py-12 text-center">
+                  <td colSpan="7" className="px-5 py-12 text-center">
                     <CreditCard
                       size={30}
                       className="mx-auto text-slate-300"
@@ -4392,6 +4504,49 @@ function ExpensesPage({ currentUser }) {
     await loadExpenses();
   };
 
+  const isAdmin = currentUser?.role === "owner";
+
+  const deleteExpense = async (expense) => {
+    if (!expense?.id) return;
+
+    if (!isAdmin) {
+      setError("Only administrators can delete expenses.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Delete expense "${expense.description}" (${formatMoney(
+        expense.amount
+      )})?\n\nThis cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    setError("");
+
+    const { data: deletedRows, error: deleteError } = await supabase
+      .from("expenses")
+      .delete()
+      .eq("id", expense.id)
+      .select("id");
+
+    if (deleteError) {
+      console.error("Error deleting expense:", deleteError);
+      setError(deleteError.message);
+      return;
+    }
+
+    if (!deletedRows || deletedRows.length === 0) {
+      setError(
+        "Expense was not deleted. Check RLS DELETE policy on public.expenses for owners."
+      );
+      return;
+    }
+
+    setExpenses((current) =>
+      current.filter((item) => item.id !== expense.id)
+    );
+  };
+
   return (
     <div>
       <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -4474,13 +4629,14 @@ function ExpensesPage({ currentUser }) {
                 <th className="px-5 py-4">Date</th>
                 <th className="px-5 py-4">Tractor</th>
                 <th className="px-5 py-4">Recorded by</th>
+                <th className="px-5 py-4">Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {loading ? (
                 <tr>
                   <td
-                    colSpan="6"
+                    colSpan="7"
                     className="px-5 py-12 text-center text-slate-500"
                   >
                     Loading expenses...
@@ -4520,11 +4676,25 @@ function ExpensesPage({ currentUser }) {
                     <td className="px-5 py-4 text-sm text-slate-600">
                       {expense.creator?.full_name || "—"}
                     </td>
+                    <td className="px-5 py-4">
+                      {isAdmin ? (
+                        <button
+                          type="button"
+                          onClick={() => deleteExpense(expense)}
+                          className="inline-flex items-center gap-1 text-sm font-semibold text-red-600 hover:text-red-800"
+                        >
+                          <Trash2 size={15} />
+                          Delete
+                        </button>
+                      ) : (
+                        <span className="text-xs text-slate-400">—</span>
+                      )}
+                    </td>
                   </tr>
                 ))
               ) : (
                 <tr>
-                  <td colSpan="6" className="px-5 py-12 text-center">
+                  <td colSpan="7" className="px-5 py-12 text-center">
                     <Wallet
                       size={30}
                       className="mx-auto text-slate-300"
@@ -5445,6 +5615,57 @@ function StaffPage({ currentUser }) {
     }
   };
 
+  const setStaffActive = async (person, active) => {
+    if (!isAdmin) {
+      setError("Only administrators can change staff status.");
+      return;
+    }
+
+    if (person.id === currentUser?.id && !active) {
+      setError("You cannot deactivate your own account.");
+      return;
+    }
+
+    const action = active ? "reactivate" : "deactivate";
+    const confirmed = window.confirm(
+      `${active ? "Reactivate" : "Deactivate"} "${person.full_name}"?\n\n${
+        active
+          ? "They will be able to sign in again (if auth allows)."
+          : "They will appear under Inactive profiles. Prefer this over deleting auth users."
+      }`
+    );
+    if (!confirmed) return;
+
+    setError("");
+    setSuccessMessage("");
+
+    const { data: updated, error: updateError } = await supabase
+      .from("profiles")
+      .update({ active })
+      .eq("id", person.id)
+      .select("id");
+
+    if (updateError) {
+      console.error("Error updating staff status:", updateError);
+      setError(updateError.message);
+      return;
+    }
+
+    if (!updated || updated.length === 0) {
+      setError(
+        "Staff status was not updated. Check RLS UPDATE on public.profiles."
+      );
+      return;
+    }
+
+    setSuccessMessage(
+      active
+        ? `${person.full_name} is active again.`
+        : `${person.full_name} has been deactivated.`
+    );
+    await loadProfiles();
+  };
+
   return (
     <div>
       <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -5549,7 +5770,19 @@ function StaffPage({ currentUser }) {
                   </p>
                 </div>
 
-                <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-emerald-500" />
+                <div className="flex shrink-0 items-center gap-2">
+                  <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />
+                  {isAdmin && person.id !== currentUser?.id ? (
+                    <button
+                      type="button"
+                      onClick={() => setStaffActive(person, false)}
+                      className="text-xs font-semibold text-red-600 hover:text-red-800"
+                      title="Deactivate"
+                    >
+                      Deactivate
+                    </button>
+                  ) : null}
+                </div>
               </div>
             ))
           ) : (
@@ -5593,7 +5826,19 @@ function StaffPage({ currentUser }) {
                   </p>
                 </div>
 
-                <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-slate-300" />
+                <div className="flex shrink-0 items-center gap-2">
+                  <span className="h-2.5 w-2.5 rounded-full bg-slate-300" />
+                  {isAdmin ? (
+                    <button
+                      type="button"
+                      onClick={() => setStaffActive(person, true)}
+                      className="text-xs font-semibold text-emerald-700 hover:text-emerald-900"
+                      title="Reactivate"
+                    >
+                      Reactivate
+                    </button>
+                  ) : null}
+                </div>
               </div>
             ))}
           </div>
